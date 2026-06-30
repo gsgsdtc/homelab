@@ -6,6 +6,7 @@ TypeScript monorepo baseline for the Homelab product.
 
 - Monorepo: pnpm workspace + Turborepo
 - Backend: Node.js + NestJS
+- Admin: Next.js
 - Database: PostgreSQL + Prisma
 - Auth: JWT
 - AppKey: `X-App-Key` request header, shared identity mechanism for App Agent access
@@ -26,6 +27,14 @@ Health check:
 curl http://localhost:3000/health
 ```
 
+Admin console:
+
+```bash
+pnpm --filter @homelab/admin dev
+```
+
+The admin app runs on `http://localhost:3002` and proxies `/api/backend/*` to the backend. Set `ADMIN_BACKEND_URL` when the backend is not on `http://localhost:3000`, or set `NEXT_PUBLIC_ADMIN_API_BASE_URL` to call another API base directly from the browser.
+
 ## Environment Variables
 
 | Name | Required | Description |
@@ -36,6 +45,8 @@ curl http://localhost:3000/health
 | `JWT_EXPIRES_IN` | no | JWT lifetime, defaults to `1h`. |
 | `INITIAL_ADMIN_USERNAME` | no | Admin username to seed at startup when paired with password. |
 | `INITIAL_ADMIN_PASSWORD` | no | Admin password to seed/update at startup when paired with username. |
+| `ADMIN_BACKEND_URL` | no | Admin Next.js rewrite target for backend API, defaults to `http://localhost:3000`. |
+| `NEXT_PUBLIC_ADMIN_API_BASE_URL` | no | Browser-visible admin API base, defaults to `/api/backend`. |
 
 ## Backend API
 
