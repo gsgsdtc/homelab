@@ -1,7 +1,9 @@
 node_modules
 dist
 coverage
+.next
 .turbo
+*.tsbuildinfo
 .env
 *.log
 .DS_Store
