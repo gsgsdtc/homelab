@@ -1,0 +1,14 @@
+{
+  "name": "@homelab/agent-rules",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "codex": "./bin/codex.js",
+    "claude": "./bin/claude.js"
+  },
+  "scripts": {
+    "build": "node --check src/init-rules.js && node --check bin/codex.js && node --check bin/claude.js",
+    "test": "node --test test/*.test.mjs"
+  }
+}
