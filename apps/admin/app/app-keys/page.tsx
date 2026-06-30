@@ -69,17 +69,17 @@ export default function AppKeysPage() {
             <tbody>
               {items.map((item) => (
                 <tr key={item.id}>
-                  <td>{item.name}</td>
-                  <td>{item.agentName || "-"}</td>
-                  <td>{item.scopes.length ? item.scopes.join(", ") : "未限制"}</td>
-                  <td>
+                  <td data-label="名称">{item.name}</td>
+                  <td data-label="Agent">{item.agentName || "-"}</td>
+                  <td data-label="范围">{item.scopes.length ? item.scopes.join(", ") : "未限制"}</td>
+                  <td data-label="状态">
                     <span className={item.isActive ? "status on" : "status off"}>
                       {item.isActive ? "启用" : "已吊销"}
                     </span>
                   </td>
-                  <td>{formatDate(item.expiresAt)}</td>
-                  <td>{formatDate(item.lastUsedAt)}</td>
-                  <td className="actions">
+                  <td data-label="过期时间">{formatDate(item.expiresAt)}</td>
+                  <td data-label="最后使用">{formatDate(item.lastUsedAt)}</td>
+                  <td className="actions" data-label="操作">
                     <button
                       className="danger"
                       disabled={!item.isActive}

@@ -81,15 +81,15 @@ export default function UsersPage() {
             <tbody>
               {users.map((user) => (
                 <tr key={user.id}>
-                  <td>{user.username}</td>
-                  <td>{user.role}</td>
-                  <td>
+                  <td data-label="用户名">{user.username}</td>
+                  <td data-label="角色">{user.role}</td>
+                  <td data-label="状态">
                     <span className={user.isActive ? "status on" : "status off"}>
                       {user.isActive ? "启用" : "禁用"}
                     </span>
                   </td>
-                  <td>{formatDate(user.createdAt)}</td>
-                  <td className="actions">
+                  <td data-label="创建时间">{formatDate(user.createdAt)}</td>
+                  <td className="actions" data-label="操作">
                     <button onClick={() => setEditing(user)} type="button">
                       编辑
                     </button>

@@ -21,6 +21,13 @@ export interface AppKey {
   updatedAt: string;
 }
 
+export interface AppIdentity {
+  id: string;
+  name: string;
+  agentName: string | null;
+  scopes: string[];
+}
+
 export interface LoginSession {
   accessToken: string;
   tokenType: "Bearer";
@@ -157,6 +164,15 @@ export class AdminApiClient {
 
   revokeAppKey(id: string) {
     return this.request<{ revoked: true }>(`/app-keys/${id}`, { method: "DELETE" });
+  }
+
+  getAppIdentity(appKey: string) {
+    return this.request<AppIdentity>("/app-identity/me", {
+      auth: false,
+      headers: {
+        "X-App-Key": appKey
+      }
+    });
   }
 
   private async request<T>(path: string, init: RequestInit & { auth?: boolean } = {}): Promise<T> {
