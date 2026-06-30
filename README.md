@@ -76,7 +76,44 @@ pnpm build
 
 ## Docker
 
+The repository builds one unified backend runtime image from `deploy/Dockerfile`.
+Runtime configuration is injected with environment variables; do not bake secrets
+or production credentials into the image.
+
 ```bash
 docker build -f deploy/Dockerfile -t homelab:local .
 docker run --env-file apps/backend/.env -p 3000:3000 homelab:local
+curl http://localhost:3000/health
 ```
+
+The image exposes port `3000` by default and includes a Docker health check for
+`GET /health`. Override `PORT` through the container environment if a different
+port is needed.
+
+## GHCR Tag Publishing
+
+GitHub Actions publishes the unified image when a tag matching `v*.*.*` is
+pushed:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Workflow: `.github/workflows/tag-image.yml`
+
+Published image names:
+
+- `ghcr.io/<owner>/<repo>:<tag>`, for example `ghcr.io/gsgsdtc/homelab:v1.0.0`
+- `ghcr.io/<owner>/<repo>:latest`
+
+Required repository settings:
+
+- Actions must be enabled.
+- The workflow uses the built-in `GITHUB_TOKEN`.
+- Job permissions must include `contents: read` and `packages: write`.
+
+No extra registry secret is required for GHCR in this repository. If package
+publishing permissions are missing, the workflow fails during login or push and
+the failing step identifies the GHCR authentication or authorization problem
+without printing token values.
