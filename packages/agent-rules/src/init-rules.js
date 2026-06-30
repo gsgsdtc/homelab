@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const AGENTS = {
   codex: {
@@ -22,9 +22,9 @@ export async function initAgentRules({ agent, cwd = process.cwd() }) {
   if (!config) {
     throw new Error(`unsupported agent: ${agent}`);
   }
-  await assertProjectRoot(cwd);
+  const projectRoot = await resolveGitRoot(cwd);
 
-  const filePath = join(cwd, config.fileName);
+  const filePath = join(projectRoot, config.fileName);
   const block = buildManagedBlock(config);
   const existing = await readOptional(filePath);
   if (existing === null) {
@@ -63,13 +63,21 @@ export async function runInitCommand({
   }
 }
 
-async function assertProjectRoot(cwd) {
-  const hasPackage = await exists(join(cwd, "package.json"));
-  const hasGit = await exists(join(cwd, ".git"));
-  if (!hasPackage && !hasGit) {
-    throw new Error(
-      "project root not found; run this command from a repository root",
-    );
+async function resolveGitRoot(cwd) {
+  let current = resolve(cwd);
+
+  while (true) {
+    if (await exists(join(current, ".git"))) {
+      return current;
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      throw new Error(
+        "project root not found; run this command from a git repository",
+      );
+    }
+    current = parent;
   }
 }
 

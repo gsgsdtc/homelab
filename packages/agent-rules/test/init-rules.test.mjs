@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import { initAgentRules } from "../src/init-rules.js";
 async function withTempProject(run) {
   const dir = await mkdtemp(join(tmpdir(), "agent-rules-"));
   try {
+    await mkdir(join(dir, ".git"));
     await writeFile(join(dir, "package.json"), "{}\n", "utf8");
     await run(dir);
   } finally {
@@ -104,6 +105,25 @@ test("init is idempotent when the managed block is current", async () => {
 
     assert.equal(result.status, "unchanged");
     assert.equal(await readFile(join(dir, "AGENTS.md"), "utf8"), before);
+  });
+});
+
+test("init run from a nested package writes only to the git root", async () => {
+  await withTempProject(async (dir) => {
+    const nestedPackage = join(dir, "packages", "app");
+    await mkdir(nestedPackage, { recursive: true });
+    await writeFile(join(nestedPackage, "package.json"), "{}\n", "utf8");
+
+    const result = await initAgentRules({ agent: "codex", cwd: nestedPackage });
+
+    assert.equal(result.status, "created");
+    assert.match(
+      await readFile(join(dir, "AGENTS.md"), "utf8"),
+      /BEGIN MULTICA CODEX RULES/,
+    );
+    await assert.rejects(readFile(join(nestedPackage, "AGENTS.md"), "utf8"), {
+      code: "ENOENT",
+    });
   });
 });
 
