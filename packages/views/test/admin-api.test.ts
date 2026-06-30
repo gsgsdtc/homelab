@@ -169,6 +169,22 @@ describe("AdminApiClient", () => {
     );
   });
 
+  it("checks AppKey access with the X-App-Key header instead of URL params", async () => {
+    fetchMock.mockResolvedValueOnce(okJson({ name: "mobile-agent", scopes: ["pages:portal"] }));
+    const client = new AdminApiClient({ baseUrl: "/api/backend", tokenStore: store, fetcher: fetchMock });
+
+    const identity = await client.getAppIdentity("hl_secret");
+
+    expect(identity.name).toBe("mobile-agent");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/backend/app-identity/me",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "X-App-Key": "hl_secret" })
+      })
+    );
+    expect(fetchMock.mock.calls[0][0]).not.toContain("hl_secret");
+  });
+
   it("uses backend validation messages and handles empty success bodies", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ message: ["username must be longer"] }), { status: 400, statusText: "Bad Request" })

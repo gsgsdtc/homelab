@@ -40,6 +40,7 @@ button {
   color: white;
   cursor: pointer;
   padding: 0 14px;
+  white-space: nowrap;
 }
 
 button:hover {
@@ -221,6 +222,7 @@ td {
   padding: 12px 14px;
   text-align: left;
   vertical-align: middle;
+  overflow-wrap: anywhere;
 }
 
 th {
@@ -346,5 +348,83 @@ button.danger,
 
   .toolbar input {
     max-width: none;
+  }
+
+  .table-wrap {
+    overflow-x: visible;
+    border: 0;
+    background: transparent;
+  }
+
+  table,
+  thead,
+  tbody,
+  tr,
+  th,
+  td {
+    display: block;
+  }
+
+  table {
+    min-width: 0;
+  }
+
+  thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  tr {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: white;
+    margin-bottom: 12px;
+    padding: 8px 0;
+  }
+
+  td {
+    display: grid;
+    grid-template-columns: minmax(84px, 34%) minmax(0, 1fr);
+    gap: 10px;
+    border-bottom: 1px solid var(--line);
+    padding: 10px 12px;
+  }
+
+  td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  td:last-child {
+    border-bottom: 0;
+  }
+
+  td.actions {
+    align-items: stretch;
+  }
+
+  td.actions button {
+    width: 100%;
+  }
+
+  .modal-backdrop {
+    align-items: end;
+    padding: 12px;
+  }
+
+  .modal {
+    max-height: calc(100vh - 24px);
+    overflow: auto;
+  }
+
+  .modal-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
   }
 }
