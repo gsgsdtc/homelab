@@ -81,9 +81,16 @@ Runtime configuration is injected with environment variables; do not bake secret
 or production credentials into the image.
 
 ```bash
-docker build -f deploy/Dockerfile -t homelab:local .
-docker run --env-file apps/backend/.env -p 3000:3000 homelab:local
+make image-build
+make image-run
 curl http://localhost:3000/health
+```
+
+The Make targets accept overrides when needed:
+
+```bash
+make image-build IMAGE_NAME=homelab:test
+make image-run IMAGE_NAME=homelab:test ENV_FILE=apps/backend/.env PORT=3000
 ```
 
 The image exposes port `3000` by default and includes a Docker health check for
@@ -93,11 +100,10 @@ port is needed.
 ## GHCR Tag Publishing
 
 GitHub Actions publishes the unified image when a tag matching `v*.*.*` is
-pushed:
+pushed. Use the Make target from a clean working tree:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+make deploy-image VERSION=v1.0.0
 ```
 
 Workflow: `.github/workflows/tag-image.yml`
