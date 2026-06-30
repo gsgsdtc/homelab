@@ -61,6 +61,8 @@ pnpm test
 pnpm build
 ```
 
+`pnpm test` and `pnpm build` run backend lifecycle hooks that generate Prisma Client before compiling or testing. Fresh checkouts do not require a separate manual `prisma generate` step for those commands.
+
 ## Docker
 
 ```bash
