@@ -9,7 +9,7 @@ describe("robots.txt", () => {
         userAgent: "*",
         allow: "/"
       },
-      sitemap: "https://homelab.local/sitemap.xml"
+      sitemap: "https://homelab.example.com/sitemap.xml"
     });
   });
 });
