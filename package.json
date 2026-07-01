@@ -5,7 +5,8 @@
   "packageManager": "pnpm@9.15.4",
   "scripts": {
     "build": "turbo run build",
-    "test": "turbo run test",
+    "init:agent-rules": "node scripts/init-agent-rules.mjs",
+    "test": "node --test scripts/*.test.mjs && turbo run test",
     "lint": "turbo run lint",
     "dev": "turbo run dev --parallel",
     "format": "prettier --write \"**/*.{ts,js,json,md,yml,yaml,prisma}\""
