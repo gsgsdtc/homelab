@@ -97,7 +97,7 @@ export class AdminApiClient {
   constructor(options: AdminApiClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "").replace(/\/$/, "");
     this.tokenStore = options.tokenStore ?? new BrowserTokenStore();
-    this.fetcher = options.fetcher ?? fetch;
+    this.fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
   }
 
   getToken() {

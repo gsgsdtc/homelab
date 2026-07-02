@@ -64,6 +64,31 @@ describe("AdminApiClient", () => {
     );
   });
 
+  it("binds the default browser fetch before sending requests", async () => {
+    const originalFetch = globalThis.fetch;
+    const browserFetch = vi.fn(function (this: unknown) {
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation");
+      }
+      return okJson({
+        accessToken: "jwt-token",
+        tokenType: "Bearer",
+        user: { id: "u1", username: "admin", role: "ADMIN", isActive: true }
+      });
+    }) as unknown as typeof fetch;
+    globalThis.fetch = browserFetch;
+
+    try {
+      const client = new AdminApiClient({ baseUrl: "/api/backend", tokenStore: store });
+
+      await expect(client.login("admin", "password123")).resolves.toMatchObject({
+        user: { username: "admin" }
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("adds bearer authorization to protected user and app key calls", async () => {
     store.setToken("jwt-token");
     fetchMock.mockResolvedValueOnce(okJson({ items: [], total: 0, page: 2, pageSize: 20 }));
