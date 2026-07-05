@@ -21,6 +21,13 @@ PORTAL_IP="${HOMELAB_PORTAL_IP:-192.168.52.24}"
 NGINX_CONTAINER="${HOMELAB_NGINX_CONTAINER:-nginx}"
 NGINX_CONFIG_DIR="${HOMELAB_NGINX_CONFIG_DIR:-/home/gsg/workspace/app/nginx/config}"
 LOG_TAIL="${HOMELAB_LOG_TAIL:-120}"
+RESULT_FILE="${HOMELAB_DEPLOY_RESULT_FILE:-${RUNTIME_DIR}/deploy-result.json}"
+DEPLOY_TRIGGER="${HOMELAB_DEPLOY_TRIGGER:-manual}"
+DEPLOY_TRIGGER_REF="${HOMELAB_DEPLOY_TRIGGER_REF:-}"
+DEPLOY_TRIGGER_SHA="${HOMELAB_DEPLOY_TRIGGER_SHA:-}"
+DEPLOY_TRIGGER_RUN_URL="${HOMELAB_DEPLOY_TRIGGER_RUN_URL:-}"
+DEPLOY_COMMIT_SHA=""
+RESULT_WRITTEN=0
 
 CHECK_ONLY=0
 SKIP_GIT=0
@@ -37,6 +44,7 @@ Environment overrides:
   HOMELAB_ENV_FILE           default: \$HOMELAB_RUNTIME_DIR/.env
   HOMELAB_ENV_SOURCE         optional source file copied to HOMELAB_ENV_FILE
   HOMELAB_GIT_REF            branch/tag/SHA to deploy, default: main
+  HOMELAB_DEPLOY_RESULT_FILE QA-readable JSON result path, default: \$HOMELAB_RUNTIME_DIR/deploy-result.json
   HOMELAB_DOMAIN             default: home.gfun.vip
   HOMELAB_RUN_PRISMA_MIGRATE set to 1 to run prisma migrate deploy
   HOMELAB_PRISMA_BASELINE_CONFIRMED must be 1 when migrations are enabled
@@ -69,10 +77,14 @@ done
 
 on_error() {
   local rc=$?
+  trap - ERR
   echo
   echo "Deploy failed"
   echo "stage: ${CURRENT_STAGE}"
   echo "exit_code: ${rc}"
+  if [ "${RESULT_WRITTEN}" -eq 0 ]; then
+    write_deploy_result "failure" "${rc}" "Unhandled error; inspect deploy log." || true
+  fi
   exit "${rc}"
 }
 
@@ -84,11 +96,78 @@ stage() {
   echo "==> ${CURRENT_STAGE}"
 }
 
+json_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf "%s" "${value}"
+}
+
+write_deploy_result() {
+  local status="$1"
+  local exit_code="${2:-0}"
+  local failure_summary="${3:-}"
+  local now commit tmp
+
+  [ -n "${RESULT_FILE}" ] || return 0
+
+  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  commit="${DEPLOY_COMMIT_SHA}"
+  if [ -z "${commit}" ] && [ -d "${SOURCE_DIR}/.git" ]; then
+    commit="$(git -C "${SOURCE_DIR}" rev-parse HEAD 2>/dev/null || true)"
+  fi
+
+  mkdir -p "$(dirname "${RESULT_FILE}")"
+  tmp="$(mktemp)"
+  {
+    echo "{"
+    echo "  \"status\": \"$(json_escape "${status}")\","
+    echo "  \"exit_code\": ${exit_code},"
+    echo "  \"stage\": \"$(json_escape "${CURRENT_STAGE}")\","
+    echo "  \"deployed_at\": \"$(json_escape "${now}")\","
+    echo "  \"git_ref\": \"$(json_escape "${GIT_REF}")\","
+    echo "  \"commit_sha\": \"$(json_escape "${commit}")\","
+    echo "  \"source_dir\": \"$(json_escape "${SOURCE_DIR}")\","
+    echo "  \"result_file\": \"$(json_escape "${RESULT_FILE}")\","
+    echo "  \"trigger\": {"
+    echo "    \"source\": \"$(json_escape "${DEPLOY_TRIGGER}")\","
+    echo "    \"ref\": \"$(json_escape "${DEPLOY_TRIGGER_REF}")\","
+    echo "    \"sha\": \"$(json_escape "${DEPLOY_TRIGGER_SHA}")\","
+    echo "    \"run_url\": \"$(json_escape "${DEPLOY_TRIGGER_RUN_URL}")\""
+    echo "  },"
+    if [ "${status}" = "success" ]; then
+      echo "  \"urls\": {"
+      echo "    \"portal\": \"https://$(json_escape "${DOMAIN}"):${PORTAL_PORT}/\","
+      echo "    \"admin\": \"https://$(json_escape "${DOMAIN}"):${ADMIN_PORT}/login\","
+      echo "    \"backend\": \"https://$(json_escape "${DOMAIN}"):${BACKEND_PORT}/health\","
+      echo "    \"rewrite\": \"https://$(json_escape "${DOMAIN}"):${ADMIN_PORT}/api/backend/health\""
+      echo "  },"
+      echo "  \"failure\": null"
+    else
+      echo "  \"urls\": null,"
+      echo "  \"failure\": {"
+      echo "    \"stage\": \"$(json_escape "${CURRENT_STAGE}")\","
+      echo "    \"summary\": \"$(json_escape "${failure_summary}")\""
+      echo "  }"
+    fi
+    echo "}"
+  } > "${tmp}"
+  install -m 644 "${tmp}" "${RESULT_FILE}"
+  rm -f "${tmp}"
+  RESULT_WRITTEN=1
+  echo "Deploy result written: ${RESULT_FILE}"
+}
+
 die() {
+  local summary="$*"
   echo
   echo "Deploy failed"
   echo "stage: ${CURRENT_STAGE}"
-  echo "summary: $*" >&2
+  echo "summary: ${summary}" >&2
+  write_deploy_result "failure" 1 "${summary}" || true
   exit 1
 }
 
@@ -138,7 +217,9 @@ sync_source() {
   [ -f "${SOURCE_DIR}/deploy/docker-compose.local.yml" ] || die "Missing deploy/docker-compose.local.yml in source"
   [ -f "${SOURCE_DIR}/deploy/Dockerfile.next" ] || die "Missing deploy/Dockerfile.next in source"
   [ -f "${SOURCE_DIR}/deploy/env.local.example" ] || die "Missing deploy/env.local.example in source"
+  DEPLOY_COMMIT_SHA="$(git -C "${SOURCE_DIR}" rev-parse HEAD)"
   echo "Source ready: ${SOURCE_DIR}"
+  echo "Source revision: ${DEPLOY_COMMIT_SHA}"
 }
 
 copy_env_source() {
@@ -393,6 +474,11 @@ print_urls() {
   echo "  rewrite: https://${DOMAIN}:${ADMIN_PORT}/api/backend/health"
 }
 
+write_success_result() {
+  stage "result writeback"
+  write_deploy_result "success" 0 ""
+}
+
 main() {
   check_dependencies
   sync_source
@@ -411,6 +497,7 @@ main() {
   wait_for_services
   check_logs
   health_check
+  write_success_result
   print_urls
 }
 

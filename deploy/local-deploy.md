@@ -63,7 +63,11 @@ HOMELAB_PRISMA_BASELINE_CONFIRMED=1 \
 - nginx registration writes `/home/gsg/workspace/app/nginx/config/homelab.conf`
   unless the existing `default.conf` already owns all three Homelab ports. It
   runs `nginx -t` before reload/restart.
-- A failed stage exits non-zero and prints the failed stage name.
+- Every deployment writes a QA-readable JSON result to
+  `/home/gsg/workspace/project/homelab/deploy/deploy-result.json`, or to
+  `HOMELAB_DEPLOY_RESULT_FILE` when that override is set.
+- A failed stage exits non-zero, prints the failed stage name, and writes the
+  failure stage plus summary into the deploy result file.
 
 ## Successful output
 
@@ -75,3 +79,8 @@ admin:   https://home.gfun.vip:8322/login
 backend: https://home.gfun.vip:8323/health
 rewrite: https://home.gfun.vip:8322/api/backend/health
 ```
+
+The result file stores the deployed ref, resolved commit SHA, status, trigger
+metadata, and the same QA URLs. The post-commit deploy workflow uploads that
+file as the `homelab-deploy-result` artifact and only starts the QA E2E handoff
+job when the deploy job succeeds with `"status": "success"`.

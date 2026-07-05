@@ -130,7 +130,8 @@ without printing token values.
 `/home/gsg/workspace/project/homelab`. It syncs the configured Git ref, validates
 host dependencies and runtime env, builds backend/admin/portal Docker services,
 starts or restarts them, validates nginx, checks recent logs, probes public
-health URLs, and prints QA-accessible URLs.
+health URLs, writes `/home/gsg/workspace/project/homelab/deploy/deploy-result.json`,
+and prints QA-accessible URLs.
 
 ```bash
 make ops-deploy-check
@@ -147,3 +148,8 @@ The Stage 1 public URL contract is:
 See `deploy/local-deploy.md` for target paths, env handling, nginx registration,
 Prisma baseline safety, and override variables. This local deployment path does
 not change the existing GHCR tag publishing workflow.
+
+The post-commit deploy workflow runs on pushes to `main` on the
+`self-hosted`/`homelab-deploy` runner. It deploys the exact pushed SHA through
+`ops-deploy.sh`, uploads the deploy result as `homelab-deploy-result`, and skips
+the QA E2E handoff unless the Stage 2 deployment succeeded.
