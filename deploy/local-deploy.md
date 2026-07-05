@@ -48,6 +48,8 @@ HOMELAB_PROJECT_ROOT=/home/gsg/workspace/project/homelab ./ops-deploy.sh
   the required env keys before build/start.
 - App dependencies are installed inside Docker builds; the target host does not
   need `pnpm`.
+- The admin image receives `ADMIN_BACKEND_URL` during Docker build because
+  Next.js rewrites are compiled into the production server.
 - Prisma migrations are skipped by default because Stage 1 found an existing
   database without `_prisma_migrations`. To run migrations, both flags are
   required:

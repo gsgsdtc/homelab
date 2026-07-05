@@ -33,6 +33,8 @@ services:
       dockerfile: deploy/Dockerfile.next
       args:
         APP_PACKAGE: "@homelab/admin"
+        ADMIN_BACKEND_URL: http://homelab-backend:3000
+        NEXT_PUBLIC_ADMIN_API_BASE_URL: /api/backend
     env_file:
       - ${HOMELAB_ENV_FILE}
     environment:
