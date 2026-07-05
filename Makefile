@@ -1,14 +1,17 @@
 IMAGE_NAME ?= homelab:local
 ENV_FILE ?= apps/backend/.env
 PORT ?= 3000
+OPS_DEPLOY ?= ./ops-deploy.sh
 
-.PHONY: help image-build image-run deploy-image check-release-version
+.PHONY: help image-build image-run deploy-image check-release-version ops-deploy ops-deploy-check
 
 help:
 	@echo "Targets:"
 	@echo "  make image-build                         Build the local Docker image"
 	@echo "  make image-run                           Run the local Docker image"
 	@echo "  make deploy-image VERSION=v1.2.3         Push a release tag that publishes the image"
+	@echo "  make ops-deploy-check                    Validate local deployment prerequisites"
+	@echo "  make ops-deploy                          Deploy backend/admin/portal locally"
 
 image-build:
 	docker build -f deploy/Dockerfile -t $(IMAGE_NAME) .
@@ -36,3 +39,9 @@ deploy-image: check-release-version
 	git tag $(VERSION)
 	git push origin $(VERSION)
 	@echo "Pushed $(VERSION). GitHub Actions will publish ghcr.io/<owner>/<repo>:$(VERSION) and :latest."
+
+ops-deploy-check:
+	$(OPS_DEPLOY) --check-only
+
+ops-deploy:
+	$(OPS_DEPLOY)

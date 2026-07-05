@@ -37,16 +37,16 @@ The admin app runs on `http://localhost:3002` and proxies `/api/backend/*` to th
 
 ## Environment Variables
 
-| Name | Required | Description |
-| --- | --- | --- |
-| `DATABASE_URL` | yes | PostgreSQL connection string used by Prisma. |
-| `PORT` | no | Backend port, defaults to `3000`. |
-| `JWT_SECRET` | yes | Secret used to sign JWT access tokens. |
-| `JWT_EXPIRES_IN` | no | JWT lifetime, defaults to `1h`. |
-| `INITIAL_ADMIN_USERNAME` | no | Admin username to seed at startup when paired with password. |
-| `INITIAL_ADMIN_PASSWORD` | no | Admin password to seed/update at startup when paired with username. |
-| `ADMIN_BACKEND_URL` | no | Admin Next.js rewrite target for backend API, defaults to `http://localhost:3000`. |
-| `NEXT_PUBLIC_ADMIN_API_BASE_URL` | no | Browser-visible admin API base, defaults to `/api/backend`. |
+| Name                             | Required | Description                                                                        |
+| -------------------------------- | -------- | ---------------------------------------------------------------------------------- |
+| `DATABASE_URL`                   | yes      | PostgreSQL connection string used by Prisma.                                       |
+| `PORT`                           | no       | Backend port, defaults to `3000`.                                                  |
+| `JWT_SECRET`                     | yes      | Secret used to sign JWT access tokens.                                             |
+| `JWT_EXPIRES_IN`                 | no       | JWT lifetime, defaults to `1h`.                                                    |
+| `INITIAL_ADMIN_USERNAME`         | no       | Admin username to seed at startup when paired with password.                       |
+| `INITIAL_ADMIN_PASSWORD`         | no       | Admin password to seed/update at startup when paired with username.                |
+| `ADMIN_BACKEND_URL`              | no       | Admin Next.js rewrite target for backend API, defaults to `http://localhost:3000`. |
+| `NEXT_PUBLIC_ADMIN_API_BASE_URL` | no       | Browser-visible admin API base, defaults to `/api/backend`.                        |
 
 ## Backend API
 
@@ -123,3 +123,27 @@ No extra registry secret is required for GHCR in this repository. If package
 publishing permissions are missing, the workflow fails during login or push and
 the failing step identifies the GHCR authentication or authorization problem
 without printing token values.
+
+## Local Host Deployment
+
+`ops-deploy.sh` is the target-host deployment entry for
+`/home/gsg/workspace/project/homelab`. It syncs the configured Git ref, validates
+host dependencies and runtime env, builds backend/admin/portal Docker services,
+starts or restarts them, validates nginx, checks recent logs, probes public
+health URLs, and prints QA-accessible URLs.
+
+```bash
+make ops-deploy-check
+make ops-deploy
+```
+
+The Stage 1 public URL contract is:
+
+- Portal: `https://home.gfun.vip:8321/`
+- Admin: `https://home.gfun.vip:8322/login`
+- Backend: `https://home.gfun.vip:8323/health`
+- Admin rewrite: `https://home.gfun.vip:8322/api/backend/health`
+
+See `deploy/local-deploy.md` for target paths, env handling, nginx registration,
+Prisma baseline safety, and override variables. This local deployment path does
+not change the existing GHCR tag publishing workflow.

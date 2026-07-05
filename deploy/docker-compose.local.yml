@@ -1,0 +1,88 @@
+services:
+  backend:
+    container_name: homelab-backend
+    image: homelab-backend:${HOMELAB_IMAGE_TAG:-gsgsdtc-main}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file:
+      - ${HOMELAB_ENV_FILE}
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    networks:
+      wg_br0:
+        ipv4_address: ${HOMELAB_BACKEND_IP:-192.168.52.22}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:3000/health >/dev/null || exit 1",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    restart: unless-stopped
+
+  admin:
+    container_name: homelab-admin
+    image: homelab-admin:${HOMELAB_IMAGE_TAG:-gsgsdtc-main}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.next
+      args:
+        APP_PACKAGE: "@homelab/admin"
+    env_file:
+      - ${HOMELAB_ENV_FILE}
+    environment:
+      NODE_ENV: production
+      PORT: "3002"
+      ADMIN_BACKEND_URL: http://homelab-backend:3000
+      NEXT_PUBLIC_ADMIN_API_BASE_URL: /api/backend
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      wg_br0:
+        ipv4_address: ${HOMELAB_ADMIN_IP:-192.168.52.23}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:3002/login >/dev/null || exit 1",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    restart: unless-stopped
+
+  portal:
+    container_name: homelab-portal
+    image: homelab-portal:${HOMELAB_IMAGE_TAG:-gsgsdtc-main}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.next
+      args:
+        APP_PACKAGE: "@homelab/portal"
+    env_file:
+      - ${HOMELAB_ENV_FILE}
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    networks:
+      wg_br0:
+        ipv4_address: ${HOMELAB_PORTAL_IP:-192.168.52.24}
+    healthcheck:
+      test:
+        ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    restart: unless-stopped
+
+networks:
+  wg_br0:
+    external: true
