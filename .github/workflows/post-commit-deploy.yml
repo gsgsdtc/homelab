@@ -147,3 +147,105 @@ jobs:
             echo "- Admin: ${{ needs.deploy.outputs.admin_url }}"
             echo "- Backend: ${{ needs.deploy.outputs.backend_url }}"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Trigger Multica QA E2E on GFU-13
+        # Posts a comment to GFU-13 that @mentions the QA agent and passes
+        # only the deploy-result fields agreed in the Stage 4 contract:
+        # commit_sha, git_ref, trigger.run_url, and the four public URLs.
+        # Required repository secrets/vars:
+        #   secrets.MULTICA_QA_PAT        a workspace PAT (mul_*) that can comment on issues
+        #   vars.MULTICA_SERVER_URL       e.g. https://home.gfun.vip:8320
+        #   vars.MULTICA_WORKSPACE_ID     workspace UUID
+        #   vars.MULTICA_QA_ISSUE_ID      GFU-13 issue UUID
+        #   vars.MULTICA_QA_AGENT_ID      QA agent UUID
+        env:
+          MULTICA_SERVER_URL: ${{ vars.MULTICA_SERVER_URL }}
+          MULTICA_PAT: ${{ secrets.MULTICA_QA_PAT }}
+          MULTICA_WORKSPACE_ID: ${{ vars.MULTICA_WORKSPACE_ID }}
+          MULTICA_QA_ISSUE_ID: ${{ vars.MULTICA_QA_ISSUE_ID }}
+          MULTICA_QA_AGENT_ID: ${{ vars.MULTICA_QA_AGENT_ID }}
+          DEPLOY_RESULT_FILE: deploy-result/deploy-result.json
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${MULTICA_PAT:-}" ]; then
+            echo "::error::MULTICA_QA_PAT secret is not configured. The QA trigger bridge cannot run without a workspace PAT."
+            exit 1
+          fi
+
+          commit_sha="$(jq -r '.commit_sha // empty' "${DEPLOY_RESULT_FILE}")"
+          git_ref="$(jq -r '.git_ref // empty' "${DEPLOY_RESULT_FILE}")"
+          run_url="$(jq -r '.trigger.run_url // empty' "${DEPLOY_RESULT_FILE}")"
+          portal_url="$(jq -r '.urls.portal // empty' "${DEPLOY_RESULT_FILE}")"
+          admin_url="$(jq -r '.urls.admin // empty' "${DEPLOY_RESULT_FILE}")"
+          backend_url="$(jq -r '.urls.backend // empty' "${DEPLOY_RESULT_FILE}")"
+          rewrite_url="$(jq -r '.urls.rewrite // empty' "${DEPLOY_RESULT_FILE}")"
+
+          missing=()
+          [ -n "${commit_sha}" ] || missing+=("commit_sha")
+          [ -n "${git_ref}" ] || missing+=("git_ref")
+          [ -n "${run_url}" ] || missing+=("trigger.run_url")
+          [ -n "${portal_url}" ] || missing+=("urls.portal")
+          [ -n "${admin_url}" ] || missing+=("urls.admin")
+          [ -n "${backend_url}" ] || missing+=("urls.backend")
+          [ -n "${rewrite_url}" ] || missing+=("urls.rewrite")
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Deploy result is missing required QA input fields: ${missing[*]}"
+            exit 1
+          fi
+
+          cat > qa-trigger-comment.md <<EOF
+          Stage 2 部署成功，触发 Stage 4 QA E2E。
+
+          输入全部来自本次 deploy artifact，禁止读取目标机本地文件或使用 localhost。
+
+          - commit_sha: ${commit_sha}
+          - git_ref: ${git_ref}
+          - trigger.run_url: ${run_url}
+          - urls.portal: ${portal_url}
+          - urls.admin: ${admin_url}
+          - urls.backend: ${backend_url}
+          - urls.rewrite: ${rewrite_url}
+
+          请 [@qa](mention://agent/${MULTICA_QA_AGENT_ID}) 执行以下最小检查并将结果回写到本 issue：
+          1. portal 返回 200
+          2. admin login 返回 200
+          3. backend health 返回 status=ok
+          4. admin rewrite health 返回 status=ok
+          5. 如测试账号契约存在，补充 admin 登录及关键页面 E2E
+
+          通过时回写：status=passed、commit_sha、四个 URL、执行时间、用例摘要。
+          失败时回写：status=failed、失败场景、复现步骤、实际结果、期望结果、归属判断（devops/backend/frontend）。
+          URL 不可访问时按环境/网络、部署编排/产物、部署或服务问题分类。
+          EOF
+
+          jq -n --arg content "$(cat qa-trigger-comment.md)" '{content: $content}' > qa-payload.json
+
+          http_status="$(curl -s -o qa-response.json -w "%{http_code}" \
+            --fail-with-body \
+            -X POST \
+            -H "Authorization: Bearer ${MULTICA_PAT}" \
+            -H "Content-Type: application/json" \
+            -H "X-Workspace-ID: ${MULTICA_WORKSPACE_ID}" \
+            "${MULTICA_SERVER_URL}/api/issues/${MULTICA_QA_ISSUE_ID}/comments" \
+            -d @qa-payload.json)"
+
+          if [ "${http_status}" -ne 200 ] && [ "${http_status}" -ne 201 ]; then
+            echo "::error::Failed to post QA trigger comment. HTTP ${http_status}"
+            cat qa-response.json >&2 || true
+            exit 1
+          fi
+
+          {
+            echo "### Multica QA trigger"
+            echo "- Issue: ${MULTICA_QA_ISSUE_ID}"
+            echo "- commit_sha: ${commit_sha}"
+            echo "- portal: ${portal_url}"
+            echo "- admin: ${admin_url}"
+            echo "- backend: ${backend_url}"
+            echo "- rewrite: ${rewrite_url}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "QA trigger comment posted successfully."
+
