@@ -46,8 +46,7 @@ make ops-deploy-check
 make ops-deploy
 ```
 
-The script requires Bash 4+. It also includes a local self-test for log rotation
-handling:
+The script includes a local self-test for service-log reset handling:
 
 ```bash
 ./deploy.sh --self-test-log-check
@@ -84,11 +83,15 @@ NEXT_PUBLIC_SITE_URL=https://home.gfun.vip:8321 \
   pnpm --filter @homelab/portal build
 ```
 
-The restart step writes fresh systemd user units, then runs:
+The restart step writes fresh systemd user units, stops existing services,
+truncates the three service logs, then starts the services:
 
 ```bash
 systemctl --user daemon-reload
 systemctl --user stop homelab-backend homelab-admin homelab-portal
+: > /home/gsg/workspace/project/homelab/deploy/logs/backend.log
+: > /home/gsg/workspace/project/homelab/deploy/logs/admin.log
+: > /home/gsg/workspace/project/homelab/deploy/logs/portal.log
 systemctl --user enable homelab-backend homelab-admin homelab-portal
 systemctl --user start homelab-backend homelab-admin homelab-portal
 ```
@@ -114,8 +117,8 @@ backend service after deploy.
 
 ## Safety gates
 
-- The script exits early when Bash is older than 4. It also checks `git`,
-  `node`, `pnpm`, `curl`, `docker`, `systemctl`, and `stat` before build/start.
+- The script checks `git`, `node`, `pnpm`, `curl`, `docker`, and `systemctl`
+  before build/start.
 - Missing env files are bootstrapped from `deploy/env.local.example`, then the
   script exits so an operator can replace placeholders.
 - Placeholder `DATABASE_URL` or `JWT_SECRET` values containing `change-me` fail
@@ -125,10 +128,9 @@ backend service after deploy.
 - nginx registration updates the existing
   `/home/gsg/workspace/app/nginx/config/default.conf` Homelab proxy targets,
   runs `nginx -t`, then reloads or restarts the nginx container.
-- Service logs written after the current restart are scanned for fatal/error
-  patterns before the final public probes. The restart baseline records each
-  log's device/inode identity plus byte size, so replaced/truncated logs are
-  scanned from the new file start and historical append logs are not blocking.
+- Service logs are truncated after the stop step and before the current start.
+  `check_logs` scans the full post-start files for fatal/error patterns before
+  the final public probes, so historical append logs are not blocking.
 - Every deployment writes a QA-readable JSON result to
   `/home/gsg/workspace/project/homelab/deploy/deploy-result.json`, or to
   `HOMELAB_DEPLOY_RESULT_FILE` when that override is set.

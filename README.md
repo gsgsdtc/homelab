@@ -139,9 +139,6 @@ make ops-deploy-check
 make ops-deploy
 ```
 
-The script requires Bash 4+ because it tracks restart log baselines in
-associative arrays.
-
 Target paths:
 
 - Source checkout: `/home/gsg/workspace/project/homelab/source`
@@ -164,7 +161,8 @@ Runtime services are user systemd units:
 - `homelab-portal` on `127.0.0.1:3007`
 
 The restart step writes the units under `$HOME/.config/systemd/user`, runs
-`systemctl --user daemon-reload`, then enables and starts all three services.
+`systemctl --user daemon-reload`, stops existing services, truncates the three
+service logs, then enables and starts all three services.
 Required runtime env is stored in the target `.env` file: `DATABASE_URL`,
 `JWT_SECRET`, and optional `JWT_EXPIRES_IN`, `INITIAL_ADMIN_USERNAME`,
 `INITIAL_ADMIN_PASSWORD`, `ADMIN_BACKEND_URL`, and
