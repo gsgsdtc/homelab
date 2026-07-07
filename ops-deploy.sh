@@ -20,7 +20,6 @@ PORTAL_PORT="${HOMELAB_PORTAL_PORT:-3001}"
 BACKEND_IP="${HOMELAB_BACKEND_IP:-127.0.0.1}"
 ADMIN_IP="${HOMELAB_ADMIN_IP:-127.0.0.1}"
 PORTAL_IP="${HOMELAB_PORTAL_IP:-127.0.0.1}"
-NGINX_CONTAINER="${HOMELAB_NGINX_CONTAINER:-nginx}"
 NGINX_CONFIG_DIR="${HOMELAB_NGINX_CONFIG_DIR:-/home/gsg/workspace/app/nginx/config}"
 LOG_DIR="${HOMELAB_LOG_DIR:-${RUNTIME_DIR}/logs}"
 PID_DIR="${HOMELAB_PID_DIR:-${RUNTIME_DIR}/pids}"
@@ -54,7 +53,6 @@ Environment overrides:
   HOMELAB_BACKEND_PORT       default: 3000
   HOMELAB_ADMIN_PORT         default: 3002
   HOMELAB_PORTAL_PORT        default: 3001
-  HOMELAB_NGINX_CONTAINER    default: nginx
   HOMELAB_NGINX_CONFIG_DIR   default: /home/gsg/workspace/app/nginx/config
   HOMELAB_RUN_PRISMA_MIGRATE set to 1 to run prisma migrate deploy
   HOMELAB_PRISMA_BASELINE_CONFIRMED must be 1 when migrations are enabled
@@ -430,8 +428,7 @@ configure_nginx() {
     return
   fi
 
-  require_cmd docker
-  docker inspect "${NGINX_CONTAINER}" >/dev/null || die "nginx container '${NGINX_CONTAINER}' is not available"
+  require_cmd nginx
 
   mkdir -p "${NGINX_CONFIG_DIR}"
   local managed_conf="${NGINX_CONFIG_DIR}/homelab.conf"
@@ -449,15 +446,28 @@ configure_nginx() {
   rm -f "${tmp}"
   echo "Wrote nginx managed config: ${managed_conf}"
 
-  docker exec "${NGINX_CONTAINER}" nginx -t
-  if docker exec "${NGINX_CONTAINER}" nginx -s reload; then
+  nginx -t
+  if nginx -s reload; then
     NGINX_RELOADED=1
     echo "nginx reloaded."
-  else
-    docker restart "${NGINX_CONTAINER}" >/dev/null
-    NGINX_RELOADED=1
-    echo "nginx restarted."
+    return
   fi
+
+  echo "nginx -s reload failed; falling back to systemctl/service restart." >&2
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active nginx >/dev/null 2>&1; then
+    systemctl restart nginx
+    NGINX_RELOADED=1
+    echo "nginx restarted via systemctl."
+    return
+  fi
+  if command -v service >/dev/null 2>&1; then
+    service nginx restart
+    NGINX_RELOADED=1
+    echo "nginx restarted via service."
+    return
+  fi
+
+  die "nginx reload/restart failed and no fallback is available"
 }
 
 wait_for_service() {

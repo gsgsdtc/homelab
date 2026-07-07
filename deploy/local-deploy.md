@@ -44,8 +44,8 @@ HOMELAB_PROJECT_ROOT=/home/gsg/workspace/project/homelab ./ops-deploy.sh
 
 ## Safety gates
 
-- The script checks `git`, `pnpm`, `node`, `curl`, `start-stop-daemon`, the nginx
-  container, and the required env keys before build/start.
+- The script checks `git`, `pnpm`, `node`, `curl`, `start-stop-daemon`, the host
+  nginx binary, and the required env keys before build/start.
 - The admin app receives `ADMIN_BACKEND_URL` during build because Next.js
   rewrites are compiled into the production server.
 - Prisma migrations are skipped by default because Stage 1 found an existing
@@ -59,9 +59,10 @@ HOMELAB_PRISMA_BASELINE_CONFIRMED=1 \
 ```
 
 - nginx registration writes `/home/gsg/workspace/app/nginx/config/homelab.conf`.
-  It only runs `nginx -t` and reloads/restarts when the generated config has
-  changed compared to the existing managed file. This avoids touching nginx on
-  every code deployment.
+  It only runs `nginx -t` and `nginx -s reload` when the generated config has
+  changed compared to the existing managed file; if reload fails it falls back to
+  `systemctl restart nginx` or `service nginx restart`. This avoids touching
+  nginx on every code deployment.
 - Every deployment writes a QA-readable JSON result to
   `/home/gsg/workspace/project/homelab/deploy/deploy-result.json`, or to
   `HOMELAB_DEPLOY_RESULT_FILE` when that override is set.
