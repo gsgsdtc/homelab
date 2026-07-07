@@ -139,6 +139,9 @@ make ops-deploy-check
 make ops-deploy
 ```
 
+The script requires Bash 4+ because it tracks restart log baselines in
+associative arrays.
+
 Target paths:
 
 - Source checkout: `/home/gsg/workspace/project/homelab/source`

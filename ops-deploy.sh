@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+  echo "Bash 4+ is required to run deploy.sh." >&2
+  exit 2
+fi
+
 set -Eeuo pipefail
 
 CURRENT_STAGE="init"
@@ -27,14 +32,19 @@ LOG_TAIL="${HOMELAB_LOG_TAIL:-120}"
 DEPLOY_COMMIT_SHA=""
 RESULT_WRITTEN=0
 declare -A LOG_START_BYTES=()
+declare -A LOG_START_IDS=()
 
 CHECK_ONLY=0
 SKIP_GIT=0
 SKIP_NGINX=0
+SELF_TEST_LOG_CHECK=0
 
 usage() {
   cat <<USAGE
-Usage: ./deploy.sh [--check-only] [--skip-git] [--skip-nginx]
+Usage: ./deploy.sh [--check-only] [--skip-git] [--skip-nginx] [--self-test-log-check]
+
+Requirements:
+  Bash 4+, git, node, pnpm, curl, docker, systemctl, stat
 
 Environment overrides:
   HOMELAB_PROJECT_ROOT       default: /home/gsg/workspace/project/homelab
@@ -63,6 +73,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --skip-nginx)
       SKIP_NGINX=1
+      ;;
+    --self-test-log-check)
+      SELF_TEST_LOG_CHECK=1
       ;;
     -h|--help)
       usage
@@ -194,6 +207,7 @@ check_dependencies() {
   require_cmd curl
   require_cmd docker
   require_cmd systemctl
+  require_cmd stat
   node --version
   pnpm --version
   echo "Host dependencies are present."
@@ -375,7 +389,7 @@ restart_services() {
   write_systemd_service "admin" "${ADMIN_PORT}" "exec next start -p ${ADMIN_PORT}" "@homelab/admin" "Environment=ADMIN_BACKEND_URL=http://127.0.0.1:${BACKEND_PORT}"
   write_systemd_service "portal" "${PORTAL_PORT}" "exec next start -p ${PORTAL_PORT}" "@homelab/portal" "Environment=NEXT_PUBLIC_SITE_URL=https://${DOMAIN}:8321"
 
-  record_log_start_bytes
+  record_log_baselines
 
   systemctl --user daemon-reload
   systemctl --user stop homelab-backend homelab-admin homelab-portal 2>/dev/null || true
@@ -424,42 +438,115 @@ read_file_size() {
   echo "${bytes}"
 }
 
-record_log_start_bytes() {
-  local service log_file bytes
+read_file_identity() {
+  local path="$1"
+  local identity
 
-  echo "Capturing service log offsets before restart."
+  if [ ! -f "${path}" ]; then
+    echo "missing"
+    return
+  fi
+
+  identity="$(stat -c "%d:%i" "${path}" 2>/dev/null)" || die "Cannot read log identity: ${path}"
+  echo "${identity}"
+}
+
+record_log_baselines() {
+  local service log_file bytes identity
+
+  echo "Capturing service log baselines before restart."
   for service in backend admin portal; do
     log_file="${LOG_DIR}/${service}.log"
     bytes="$(read_file_size "${log_file}")"
+    identity="$(read_file_identity "${log_file}")"
     LOG_START_BYTES["${service}"]="${bytes}"
-    echo "Log baseline for ${service}: ${bytes} bytes"
+    LOG_START_IDS["${service}"]="${identity}"
+    echo "Log baseline for ${service}: ${identity}, ${bytes} bytes"
   done
+}
+
+scan_log_for_error_patterns() {
+  local service="$1"
+  local log_file="$2"
+  local error_file="$3"
+  local start_byte start_identity current_size current_identity scan_start
+
+  if [ ! -f "${log_file}" ]; then
+    return 1
+  fi
+
+  start_byte="${LOG_START_BYTES[$service]:-0}"
+  start_identity="${LOG_START_IDS[$service]:-missing}"
+  current_size="$(read_file_size "${log_file}")"
+  current_identity="$(read_file_identity "${log_file}")"
+  if [ "${current_identity}" != "${start_identity}" ] || [ "${current_size}" -lt "${start_byte}" ]; then
+    start_byte=0
+  fi
+
+  scan_start=$((start_byte + 1))
+  echo "Checking ${service} logs written after restart identity ${current_identity} byte offset ${start_byte}"
+  tail -c "+${scan_start}" "${log_file}" 2>/dev/null | grep -Eai "(exception|fatal|panic|failed|error)" | tail -n "${LOG_TAIL}" >"${error_file}"
+  [ -s "${error_file}" ]
 }
 
 check_logs() {
   stage "log check"
-  local service log_file start_byte current_size scan_start error_file
+  local service log_file error_file
   for service in backend admin portal; do
     log_file="${LOG_DIR}/${service}.log"
     error_file="/tmp/homelab-${service}-deploy-errors.log"
     rm -f "${error_file}"
-    if [ -f "${log_file}" ]; then
-      start_byte="${LOG_START_BYTES[$service]:-0}"
-      current_size="$(read_file_size "${log_file}")"
-      if [ "${current_size}" -lt "${start_byte}" ]; then
-        start_byte=0
-      fi
-      scan_start=$((start_byte + 1))
-      echo "Checking ${service} logs written after restart byte offset ${start_byte}"
-      if tail -c "+${scan_start}" "${log_file}" 2>/dev/null | grep -Eai "(exception|fatal|panic|failed|error)" | tail -n "${LOG_TAIL}" >"${error_file}"; then
-        if [ -s "${error_file}" ]; then
-          cat "${error_file}" >&2
-          die "New ${service} logs since restart contain error patterns"
-        fi
-      fi
+    if scan_log_for_error_patterns "${service}" "${log_file}" "${error_file}"; then
+      cat "${error_file}" >&2
+      die "New ${service} logs since restart contain error patterns"
     fi
     rm -f "${error_file}"
   done
+}
+
+run_log_check_self_test() {
+  stage "log check self-test"
+  local tmp_dir old_log new_log stdout_file error_file
+
+  tmp_dir="$(mktemp -d)"
+  old_log="${tmp_dir}/logs/backend.log"
+  new_log="${tmp_dir}/logs/backend.new"
+  stdout_file="${tmp_dir}/stdout.log"
+  error_file="${tmp_dir}/errors.log"
+  mkdir -p "${tmp_dir}/logs"
+
+  LOG_DIR="${tmp_dir}/logs"
+  RESULT_FILE=""
+  LOG_START_BYTES=()
+  LOG_START_IDS=()
+
+  printf "%128s" "old clean baseline" > "${old_log}"
+  record_log_baselines >/dev/null
+
+  {
+    echo "error: replacement log must be detected"
+    printf "%192s" "new file padding beyond old offset"
+  } > "${new_log}"
+  mv -f "${new_log}" "${old_log}"
+
+  if ! scan_log_for_error_patterns "backend" "${old_log}" "${error_file}" >"${stdout_file}"; then
+    cat "${stdout_file}" >&2 || true
+    cat "${error_file}" >&2 || true
+    rm -rf "${tmp_dir}"
+    echo "Log check self-test failed: replacement log error was not detected." >&2
+    exit 1
+  fi
+
+  if ! grep -q "replacement log must be detected" "${error_file}"; then
+    cat "${stdout_file}" >&2 || true
+    cat "${error_file}" >&2 || true
+    rm -rf "${tmp_dir}"
+    echo "Log check self-test failed: expected error line was not reported." >&2
+    exit 1
+  fi
+
+  rm -rf "${tmp_dir}"
+  echo "Log check self-test passed."
 }
 
 curl_url() {
@@ -497,6 +584,11 @@ write_success_result() {
 }
 
 main() {
+  if [ "${SELF_TEST_LOG_CHECK}" -eq 1 ]; then
+    run_log_check_self_test
+    exit 0
+  fi
+
   check_dependencies
   sync_source
   prepare_config
