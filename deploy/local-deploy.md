@@ -2,22 +2,22 @@
 
 `ops-deploy.sh` is the repeatable local deployment entry for the target host.
 It deploys `backend`, `admin`, and `portal` under
-`/home/gsg/workspace/project/homelab` and keeps the existing Docker image
-release path (`deploy/Dockerfile` plus `.github/workflows/tag-image.yml`)
-separate.
+`/home/gsg/workspace/project/homelab` using direct code deployment: it installs
+dependencies, builds the apps, and runs them as local processes managed by
+`start-stop-daemon`. The existing Docker image release path
+(`deploy/Dockerfile` plus `.github/workflows/tag-image.yml`) is kept separate and
+is not used by the automatic deployment flow.
 
 ## Target contract
 
 - Source checkout: `/home/gsg/workspace/project/homelab/source`
 - Runtime files: `/home/gsg/workspace/project/homelab/deploy`
 - Env file: `/home/gsg/workspace/project/homelab/deploy/.env`
-- Docker network: external `wg_br0`
-- Backend: `homelab-backend`, `192.168.52.22:3000`, public
-  `https://home.gfun.vip:8323/health`
-- Admin: `homelab-admin`, `192.168.52.23:3002`, public
-  `https://home.gfun.vip:8322/login`
-- Portal: `homelab-portal`, `192.168.52.24:3000`, public
-  `https://home.gfun.vip:8321/`
+- Pid files: `/home/gsg/workspace/project/homelab/deploy/pids/*.pid`
+- Service logs: `/home/gsg/workspace/project/homelab/deploy/logs/*.log`
+- Backend: `http://127.0.0.1:3000`, public `https://home.gfun.vip:8323/health`
+- Admin: `http://127.0.0.1:3002`, public `https://home.gfun.vip:8322/login`
+- Portal: `http://127.0.0.1:3001`, public `https://home.gfun.vip:8321/`
 - Admin backend rewrite probe:
   `https://home.gfun.vip:8322/api/backend/health`
 
@@ -44,12 +44,10 @@ HOMELAB_PROJECT_ROOT=/home/gsg/workspace/project/homelab ./ops-deploy.sh
 
 ## Safety gates
 
-- The script checks `git`, Docker Compose v2, `curl`, the nginx container, and
-  the required env keys before build/start.
-- App dependencies are installed inside Docker builds; the target host does not
-  need `pnpm`.
-- The admin image receives `ADMIN_BACKEND_URL` during Docker build because
-  Next.js rewrites are compiled into the production server.
+- The script checks `git`, `pnpm`, `node`, `curl`, `start-stop-daemon`, the nginx
+  container, and the required env keys before build/start.
+- The admin app receives `ADMIN_BACKEND_URL` during build because Next.js
+  rewrites are compiled into the production server.
 - Prisma migrations are skipped by default because Stage 1 found an existing
   database without `_prisma_migrations`. To run migrations, both flags are
   required:
@@ -60,9 +58,10 @@ HOMELAB_PRISMA_BASELINE_CONFIRMED=1 \
 ./ops-deploy.sh
 ```
 
-- nginx registration writes `/home/gsg/workspace/app/nginx/config/homelab.conf`
-  unless the existing `default.conf` already owns all three Homelab ports. It
-  runs `nginx -t` before reload/restart.
+- nginx registration writes `/home/gsg/workspace/app/nginx/config/homelab.conf`.
+  It only runs `nginx -t` and reloads/restarts when the generated config has
+  changed compared to the existing managed file. This avoids touching nginx on
+  every code deployment.
 - Every deployment writes a QA-readable JSON result to
   `/home/gsg/workspace/project/homelab/deploy/deploy-result.json`, or to
   `HOMELAB_DEPLOY_RESULT_FILE` when that override is set.

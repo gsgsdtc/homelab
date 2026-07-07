@@ -10,16 +10,20 @@ RUNTIME_DIR="${HOMELAB_RUNTIME_DIR:-${PROJECT_ROOT}/deploy}"
 ENV_FILE="${HOMELAB_ENV_FILE:-${RUNTIME_DIR}/.env}"
 REPO_URL="${HOMELAB_REPO_URL:-git@github.com:gsgsdtc/homelab.git}"
 GIT_REF="${HOMELAB_GIT_REF:-main}"
-COMPOSE_PROJECT="${HOMELAB_COMPOSE_PROJECT:-homelab}"
 DOMAIN="${HOMELAB_DOMAIN:-home.gfun.vip}"
-PORTAL_PORT="${HOMELAB_PORTAL_PUBLIC_PORT:-8321}"
-ADMIN_PORT="${HOMELAB_ADMIN_PUBLIC_PORT:-8322}"
-BACKEND_PORT="${HOMELAB_BACKEND_PUBLIC_PORT:-8323}"
-BACKEND_IP="${HOMELAB_BACKEND_IP:-192.168.52.22}"
-ADMIN_IP="${HOMELAB_ADMIN_IP:-192.168.52.23}"
-PORTAL_IP="${HOMELAB_PORTAL_IP:-192.168.52.24}"
+PORTAL_PUBLIC_PORT="${HOMELAB_PORTAL_PUBLIC_PORT:-8321}"
+ADMIN_PUBLIC_PORT="${HOMELAB_ADMIN_PUBLIC_PORT:-8322}"
+BACKEND_PUBLIC_PORT="${HOMELAB_BACKEND_PUBLIC_PORT:-8323}"
+BACKEND_PORT="${HOMELAB_BACKEND_PORT:-3000}"
+ADMIN_PORT="${HOMELAB_ADMIN_PORT:-3002}"
+PORTAL_PORT="${HOMELAB_PORTAL_PORT:-3001}"
+BACKEND_IP="${HOMELAB_BACKEND_IP:-127.0.0.1}"
+ADMIN_IP="${HOMELAB_ADMIN_IP:-127.0.0.1}"
+PORTAL_IP="${HOMELAB_PORTAL_IP:-127.0.0.1}"
 NGINX_CONTAINER="${HOMELAB_NGINX_CONTAINER:-nginx}"
 NGINX_CONFIG_DIR="${HOMELAB_NGINX_CONFIG_DIR:-/home/gsg/workspace/app/nginx/config}"
+LOG_DIR="${HOMELAB_LOG_DIR:-${RUNTIME_DIR}/logs}"
+PID_DIR="${HOMELAB_PID_DIR:-${RUNTIME_DIR}/pids}"
 LOG_TAIL="${HOMELAB_LOG_TAIL:-120}"
 RESULT_FILE="${HOMELAB_DEPLOY_RESULT_FILE:-${RUNTIME_DIR}/deploy-result.json}"
 DEPLOY_TRIGGER="${HOMELAB_DEPLOY_TRIGGER:-manual}"
@@ -28,6 +32,7 @@ DEPLOY_TRIGGER_SHA="${HOMELAB_DEPLOY_TRIGGER_SHA:-}"
 DEPLOY_TRIGGER_RUN_URL="${HOMELAB_DEPLOY_TRIGGER_RUN_URL:-}"
 DEPLOY_COMMIT_SHA=""
 RESULT_WRITTEN=0
+NGINX_RELOADED=0
 
 CHECK_ONLY=0
 SKIP_GIT=0
@@ -46,6 +51,11 @@ Environment overrides:
   HOMELAB_GIT_REF            branch/tag/SHA to deploy, default: main
   HOMELAB_DEPLOY_RESULT_FILE QA-readable JSON result path, default: \$HOMELAB_RUNTIME_DIR/deploy-result.json
   HOMELAB_DOMAIN             default: home.gfun.vip
+  HOMELAB_BACKEND_PORT       default: 3000
+  HOMELAB_ADMIN_PORT         default: 3002
+  HOMELAB_PORTAL_PORT        default: 3001
+  HOMELAB_NGINX_CONTAINER    default: nginx
+  HOMELAB_NGINX_CONFIG_DIR   default: /home/gsg/workspace/app/nginx/config
   HOMELAB_RUN_PRISMA_MIGRATE set to 1 to run prisma migrate deploy
   HOMELAB_PRISMA_BASELINE_CONFIRMED must be 1 when migrations are enabled
 USAGE
@@ -140,10 +150,10 @@ write_deploy_result() {
     echo "  },"
     if [ "${status}" = "success" ]; then
       echo "  \"urls\": {"
-      echo "    \"portal\": \"https://$(json_escape "${DOMAIN}"):${PORTAL_PORT}/\","
-      echo "    \"admin\": \"https://$(json_escape "${DOMAIN}"):${ADMIN_PORT}/login\","
-      echo "    \"backend\": \"https://$(json_escape "${DOMAIN}"):${BACKEND_PORT}/health\","
-      echo "    \"rewrite\": \"https://$(json_escape "${DOMAIN}"):${ADMIN_PORT}/api/backend/health\""
+      echo "    \"portal\": \"https://$(json_escape "${DOMAIN}"):${PORTAL_PUBLIC_PORT}/\","
+      echo "    \"admin\": \"https://$(json_escape "${DOMAIN}"):${ADMIN_PUBLIC_PORT}/login\","
+      echo "    \"backend\": \"https://$(json_escape "${DOMAIN}"):${BACKEND_PUBLIC_PORT}/health\","
+      echo "    \"rewrite\": \"https://$(json_escape "${DOMAIN}"):${ADMIN_PUBLIC_PORT}/api/backend/health\""
       echo "  },"
       echo "  \"failure\": null"
     else
@@ -175,21 +185,23 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Required command is missing: $1"
 }
 
-compose() {
-  HOMELAB_ENV_FILE="${ENV_FILE}" \
-    docker compose --env-file "${ENV_FILE}" -f "${SOURCE_DIR}/deploy/docker-compose.local.yml" -p "${COMPOSE_PROJECT}" "$@"
+load_env() {
+  if [ -f "${ENV_FILE}" ]; then
+    set -a
+    # shellcheck source=/dev/null
+    . "${ENV_FILE}"
+    set +a
+  fi
 }
 
 check_dependencies() {
   stage "dependency check"
   require_cmd git
-  require_cmd docker
   require_cmd curl
-  docker compose version >/dev/null || die "Docker Compose v2 is required"
-  if [ "${SKIP_NGINX}" -eq 0 ]; then
-    docker inspect "${NGINX_CONTAINER}" >/dev/null || die "nginx container '${NGINX_CONTAINER}' is not available"
-  fi
-  echo "Host dependencies are present. Application dependencies are installed inside Docker builds."
+  require_cmd pnpm
+  require_cmd node
+  require_cmd start-stop-daemon
+  echo "Host dependencies are present. Services will run directly from source code (no Docker)."
 }
 
 checkout_ref() {
@@ -214,9 +226,7 @@ sync_source() {
     checkout_ref
   fi
 
-  [ -f "${SOURCE_DIR}/deploy/docker-compose.local.yml" ] || die "Missing deploy/docker-compose.local.yml in source"
-  [ -f "${SOURCE_DIR}/deploy/Dockerfile.next" ] || die "Missing deploy/Dockerfile.next in source"
-  [ -f "${SOURCE_DIR}/deploy/env.local.example" ] || die "Missing deploy/env.local.example in source"
+  [ -f "${SOURCE_DIR}/package.json" ] || die "Missing package.json in source"
   DEPLOY_COMMIT_SHA="$(git -C "${SOURCE_DIR}" rev-parse HEAD)"
   echo "Source ready: ${SOURCE_DIR}"
   echo "Source revision: ${DEPLOY_COMMIT_SHA}"
@@ -270,121 +280,25 @@ prepare_config() {
   fi
   chmod 600 "${ENV_FILE}"
   validate_required_env
+  load_env
   echo "Runtime env file validated: ${ENV_FILE}"
 }
 
-render_nginx_config() {
-  cat <<NGINX
-# Managed by homelab ops-deploy.sh.
-server {
-    listen ${PORTAL_PORT} ssl;
-    server_name ${DOMAIN};
-
-    ssl_certificate /etc/nginx/conf.d/${DOMAIN}.pem;
-    ssl_certificate_key /etc/nginx/conf.d/${DOMAIN}.key;
-
-    location / {
-        proxy_pass http://${PORTAL_IP}:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-    }
+install_dependencies() {
+  stage "dependency install"
+  cd "${SOURCE_DIR}"
+  pnpm install
+  echo "Dependencies installed."
 }
 
-server {
-    listen ${ADMIN_PORT} ssl;
-    server_name ${DOMAIN};
-
-    ssl_certificate /etc/nginx/conf.d/${DOMAIN}.pem;
-    ssl_certificate_key /etc/nginx/conf.d/${DOMAIN}.key;
-
-    location / {
-        proxy_pass http://${ADMIN_IP}:3002;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-    }
-}
-
-server {
-    listen ${BACKEND_PORT} ssl;
-    server_name ${DOMAIN};
-
-    ssl_certificate /etc/nginx/conf.d/${DOMAIN}.pem;
-    ssl_certificate_key /etc/nginx/conf.d/${DOMAIN}.key;
-
-    location / {
-        proxy_pass http://${BACKEND_IP}:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-    }
-}
-NGINX
-}
-
-count_existing_listeners() {
-  local file="$1"
-  local count=0
-  local port
-  for port in "${PORTAL_PORT}" "${ADMIN_PORT}" "${BACKEND_PORT}"; do
-    if grep -Eq "listen[[:space:]]+${port}([[:space:];]|$)" "${file}"; then
-      count=$((count + 1))
-    fi
-  done
-  printf "%s" "${count}"
-}
-
-configure_nginx() {
-  stage "nginx registration"
-  if [ "${SKIP_NGINX}" -eq 1 ]; then
-    echo "Skipping nginx registration by request."
-    return
-  fi
-
-  mkdir -p "${NGINX_CONFIG_DIR}"
-  local managed_conf="${NGINX_CONFIG_DIR}/homelab.conf"
-  local default_conf="${NGINX_CONFIG_DIR}/default.conf"
-
-  if [ ! -f "${managed_conf}" ] && [ -f "${default_conf}" ]; then
-    local listeners
-    listeners="$(count_existing_listeners "${default_conf}")"
-    if [ "${listeners}" -eq 3 ]; then
-      echo "default.conf already owns Homelab public ports; leaving nginx config file untouched."
-      docker exec "${NGINX_CONTAINER}" nginx -t
-      return
-    fi
-    if [ "${listeners}" -gt 0 ]; then
-      die "Found a partial Homelab nginx port registration in ${default_conf}; resolve it before generating ${managed_conf}"
-    fi
-  fi
-
-  local tmp
-  tmp="$(mktemp)"
-  render_nginx_config > "${tmp}"
-  if [ -f "${managed_conf}" ] && cmp -s "${tmp}" "${managed_conf}"; then
-    echo "nginx managed config is unchanged: ${managed_conf}"
-  else
-    install -m 644 "${tmp}" "${managed_conf}"
-    echo "Wrote nginx managed config: ${managed_conf}"
-  fi
-  rm -f "${tmp}"
-
-  docker exec "${NGINX_CONTAINER}" nginx -t
-  if ! docker exec "${NGINX_CONTAINER}" nginx -s reload; then
-    docker restart "${NGINX_CONTAINER}" >/dev/null
-  fi
-}
-
-build_images() {
-  stage "docker build"
-  compose build
+build_apps() {
+  stage "build apps"
+  cd "${SOURCE_DIR}"
+  # Admin rewrites bake ADMIN_BACKEND_URL at build time; default to local backend.
+  export ADMIN_BACKEND_URL="${ADMIN_BACKEND_URL:-http://${BACKEND_IP}:${BACKEND_PORT}}"
+  export NEXT_PUBLIC_ADMIN_API_BASE_URL="${NEXT_PUBLIC_ADMIN_API_BASE_URL:-/api/backend}"
+  pnpm build
+  echo "Apps built."
 }
 
 run_migrations_if_enabled() {
@@ -396,51 +310,190 @@ run_migrations_if_enabled() {
   if [ "${HOMELAB_PRISMA_BASELINE_CONFIRMED:-0}" != "1" ]; then
     die "Refusing Prisma migrations until HOMELAB_PRISMA_BASELINE_CONFIRMED=1 is set"
   fi
-  compose run --rm backend pnpm --filter @homelab/backend prisma migrate deploy
+  cd "${SOURCE_DIR}"
+  pnpm --filter @homelab/backend prisma migrate deploy
 }
 
-restart_services() {
-  stage "service restart"
-  compose up -d --remove-orphans
+service_pid_file() {
+  printf "%s/%s.pid" "${PID_DIR}" "$1"
 }
 
-wait_for_container() {
-  local container="$1"
-  local timeout="${2:-90}"
+service_log_file() {
+  printf "%s/%s.log" "${LOG_DIR}" "$1"
+}
+
+stop_service() {
+  local name="$1"
+  local pid_file
+  pid_file="$(service_pid_file "${name}")"
+  if [ -f "${pid_file}" ]; then
+    start-stop-daemon --stop --pidfile "${pid_file}" --retry TERM/5/KILL/5 --remove-pidfile || true
+  fi
+}
+
+start_service() {
+  local name="$1"
+  local command="$2"
+  local pid_file log_file workdir
+  pid_file="$(service_pid_file "${name}")"
+  log_file="$(service_log_file "${name}")"
+  workdir="${SOURCE_DIR}"
+
+  mkdir -p "${PID_DIR}" "${LOG_DIR}"
+  stop_service "${name}"
+
+  : > "${log_file}"
+  start-stop-daemon --start --background \
+    --pidfile "${pid_file}" --make-pidfile \
+    --chdir "${workdir}" \
+    --output "${log_file}" \
+    --startas /bin/bash -- -c "exec ${command}"
+  echo "${name} started."
+}
+
+stop_services() {
+  stage "stop services"
+  stop_service "homelab-portal"
+  stop_service "homelab-admin"
+  stop_service "homelab-backend"
+  echo "Old services stopped."
+}
+
+start_services() {
+  stage "start services"
+  start_service "homelab-backend" "PORT=${BACKEND_PORT} pnpm --filter @homelab/backend start"
+  start_service "homelab-admin" "PORT=${ADMIN_PORT} ADMIN_BACKEND_URL=http://${BACKEND_IP}:${BACKEND_PORT} pnpm --filter @homelab/admin start"
+  start_service "homelab-portal" "PORT=${PORTAL_PORT} pnpm --filter @homelab/portal start"
+  echo "New services started."
+}
+
+render_nginx_config() {
+  cat <<NGINX
+# Managed by homelab ops-deploy.sh.
+server {
+    listen ${PORTAL_PUBLIC_PORT} ssl;
+    server_name ${DOMAIN};
+
+    ssl_certificate /etc/nginx/conf.d/${DOMAIN}.pem;
+    ssl_certificate_key /etc/nginx/conf.d/${DOMAIN}.key;
+
+    location / {
+        proxy_pass http://${PORTAL_IP}:${PORTAL_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+
+server {
+    listen ${ADMIN_PUBLIC_PORT} ssl;
+    server_name ${DOMAIN};
+
+    ssl_certificate /etc/nginx/conf.d/${DOMAIN}.pem;
+    ssl_certificate_key /etc/nginx/conf.d/${DOMAIN}.key;
+
+    location / {
+        proxy_pass http://${ADMIN_IP}:${ADMIN_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+
+server {
+    listen ${BACKEND_PUBLIC_PORT} ssl;
+    server_name ${DOMAIN};
+
+    ssl_certificate /etc/nginx/conf.d/${DOMAIN}.pem;
+    ssl_certificate_key /etc/nginx/conf.d/${DOMAIN}.key;
+
+    location / {
+        proxy_pass http://${BACKEND_IP}:${BACKEND_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+NGINX
+}
+
+configure_nginx() {
+  stage "nginx registration"
+  if [ "${SKIP_NGINX}" -eq 1 ]; then
+    echo "Skipping nginx registration by request."
+    return
+  fi
+
+  require_cmd docker
+  docker inspect "${NGINX_CONTAINER}" >/dev/null || die "nginx container '${NGINX_CONTAINER}' is not available"
+
+  mkdir -p "${NGINX_CONFIG_DIR}"
+  local managed_conf="${NGINX_CONFIG_DIR}/homelab.conf"
+  local tmp
+  tmp="$(mktemp)"
+  render_nginx_config > "${tmp}"
+
+  if [ -f "${managed_conf}" ] && cmp -s "${tmp}" "${managed_conf}"; then
+    echo "nginx managed config is unchanged: ${managed_conf}"
+    rm -f "${tmp}"
+    return
+  fi
+
+  install -m 644 "${tmp}" "${managed_conf}"
+  rm -f "${tmp}"
+  echo "Wrote nginx managed config: ${managed_conf}"
+
+  docker exec "${NGINX_CONTAINER}" nginx -t
+  if docker exec "${NGINX_CONTAINER}" nginx -s reload; then
+    NGINX_RELOADED=1
+    echo "nginx reloaded."
+  else
+    docker restart "${NGINX_CONTAINER}" >/dev/null
+    NGINX_RELOADED=1
+    echo "nginx restarted."
+  fi
+}
+
+wait_for_service() {
+  local name="$1"
+  local url="$2"
+  local timeout="${3:-60}"
   local elapsed=0
-  local status
   while [ "${elapsed}" -lt "${timeout}" ]; do
-    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${container}" 2>/dev/null || true)"
-    case "${status}" in
-      healthy|running)
-        echo "${container}: ${status}"
-        return
-        ;;
-      unhealthy|exited|dead)
-        die "${container} entered state: ${status}"
-        ;;
-    esac
-    sleep 3
-    elapsed=$((elapsed + 3))
+    if curl --fail --silent --show-error --location --connect-timeout 2 --max-time 5 "${url}" >/dev/null 2>&1; then
+      echo "${name}: healthy"
+      return
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
   done
-  die "${container} did not become healthy within ${timeout}s"
+  die "${name} did not become healthy within ${timeout}s"
 }
 
 wait_for_services() {
-  stage "container health"
-  wait_for_container homelab-backend 120
-  wait_for_container homelab-admin 120
-  wait_for_container homelab-portal 120
+  stage "service health"
+  wait_for_service "backend" "http://${BACKEND_IP}:${BACKEND_PORT}/health" 90
+  wait_for_service "admin" "http://${ADMIN_IP}:${ADMIN_PORT}/login" 90
+  wait_for_service "portal" "http://${PORTAL_IP}:${PORTAL_PORT}/" 90
 }
 
 check_logs() {
   stage "log check"
-  local service
-  for service in backend admin portal; do
-    echo "Checking recent logs for ${service}"
-    if compose logs --tail "${LOG_TAIL}" "${service}" | grep -Eai "(exception|fatal|panic|failed|error)" >/tmp/homelab-${service}-deploy-errors.log; then
-      cat "/tmp/homelab-${service}-deploy-errors.log" >&2
-      die "Recent ${service} logs contain error patterns"
+  local service log_file
+  for service in homelab-backend homelab-admin homelab-portal; do
+    log_file="$(service_log_file "${service}")"
+    if [ -f "${log_file}" ]; then
+      echo "Checking recent logs for ${service}"
+      if tail -n "${LOG_TAIL}" "${log_file}" | grep -Eai "(exception|fatal|panic|failed|error)" >/tmp/homelab-${service}-deploy-errors.log; then
+        cat "/tmp/homelab-${service}-deploy-errors.log" >&2
+        die "Recent ${service} logs contain error patterns"
+      fi
     fi
   done
 }
@@ -458,20 +511,20 @@ curl_url() {
 
 health_check() {
   stage "public health check"
-  curl_url "portal" "https://${DOMAIN}:${PORTAL_PORT}/"
-  curl_url "admin" "https://${DOMAIN}:${ADMIN_PORT}/login"
-  curl_url "admin backend rewrite" "https://${DOMAIN}:${ADMIN_PORT}/api/backend/health"
-  curl_url "backend" "https://${DOMAIN}:${BACKEND_PORT}/health"
+  curl_url "portal" "https://${DOMAIN}:${PORTAL_PUBLIC_PORT}/"
+  curl_url "admin" "https://${DOMAIN}:${ADMIN_PUBLIC_PORT}/login"
+  curl_url "admin backend rewrite" "https://${DOMAIN}:${ADMIN_PUBLIC_PORT}/api/backend/health"
+  curl_url "backend" "https://${DOMAIN}:${BACKEND_PUBLIC_PORT}/health"
 }
 
 print_urls() {
   stage "deployment summary"
   echo "Deployment succeeded."
   echo "QA URLs:"
-  echo "  portal:  https://${DOMAIN}:${PORTAL_PORT}/"
-  echo "  admin:   https://${DOMAIN}:${ADMIN_PORT}/login"
-  echo "  backend: https://${DOMAIN}:${BACKEND_PORT}/health"
-  echo "  rewrite: https://${DOMAIN}:${ADMIN_PORT}/api/backend/health"
+  echo "  portal:  https://${DOMAIN}:${PORTAL_PUBLIC_PORT}/"
+  echo "  admin:   https://${DOMAIN}:${ADMIN_PUBLIC_PORT}/login"
+  echo "  backend: https://${DOMAIN}:${BACKEND_PUBLIC_PORT}/health"
+  echo "  rewrite: https://${DOMAIN}:${ADMIN_PUBLIC_PORT}/api/backend/health"
 }
 
 write_success_result() {
@@ -490,9 +543,11 @@ main() {
     exit 0
   fi
 
-  build_images
+  install_dependencies
+  build_apps
   run_migrations_if_enabled
-  restart_services
+  stop_services
+  start_services
   configure_nginx
   wait_for_services
   check_logs

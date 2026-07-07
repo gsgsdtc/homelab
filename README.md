@@ -42,7 +42,7 @@ The admin app runs on `http://localhost:3002` and proxies `/api/backend/*` to th
 | `DATABASE_URL`                   | yes      | PostgreSQL connection string used by Prisma.                                       |
 | `PORT`                           | no       | Backend port, defaults to `3000`.                                                  |
 | `JWT_SECRET`                     | yes      | Secret used to sign JWT access tokens.                                             |
-| `JWT_EXPIRES_IN`                 | no       | JWT lifetime, defaults to `1h`.                                                    |
+| `JWT_EXPIRES_IN`                 | no       | JWT lifetime, defaults to `1h`.                                                      |
 | `INITIAL_ADMIN_USERNAME`         | no       | Admin username to seed at startup when paired with password.                       |
 | `INITIAL_ADMIN_PASSWORD`         | no       | Admin password to seed/update at startup when paired with username.                |
 | `ADMIN_BACKEND_URL`              | no       | Admin Next.js rewrite target for backend API, defaults to `http://localhost:3000`. |
@@ -78,7 +78,9 @@ pnpm build
 
 The repository builds one unified backend runtime image from `deploy/Dockerfile`.
 Runtime configuration is injected with environment variables; do not bake secrets
-or production credentials into the image.
+or production credentials into the image. Docker image publishing is kept as a
+separate release path and is not used by the automated direct code deployment
+flow.
 
 ```bash
 make image-build
@@ -128,26 +130,28 @@ without printing token values.
 
 `ops-deploy.sh` is the target-host deployment entry for
 `/home/gsg/workspace/project/homelab`. It syncs the configured Git ref, validates
-host dependencies and runtime env, builds backend/admin/portal Docker services,
-starts or restarts them, validates nginx, checks recent logs, probes public
-health URLs, writes `/home/gsg/workspace/project/homelab/deploy/deploy-result.json`,
-and prints QA-accessible URLs.
+host dependencies and runtime env, installs dependencies, builds
+backend/admin/portal directly from source, starts or restarts them as local
+processes, updates nginx only when the generated config changes, checks recent
+logs, probes public health URLs, writes
+`/home/gsg/workspace/project/homelab/deploy/deploy-result.json`, and prints
+QA-accessible URLs. This path does not use Docker, docker-compose, or GHCR images.
 
 ```bash
 make ops-deploy-check
 make ops-deploy
 ```
 
-The Stage 1 public URL contract is:
+The Stage 2 public URL contract is:
 
 - Portal: `https://home.gfun.vip:8321/`
 - Admin: `https://home.gfun.vip:8322/login`
 - Backend: `https://home.gfun.vip:8323/health`
 - Admin rewrite: `https://home.gfun.vip:8322/api/backend/health`
 
-See `deploy/local-deploy.md` for target paths, env handling, nginx registration,
-Prisma baseline safety, and override variables. This local deployment path does
-not change the existing GHCR tag publishing workflow.
+See `deploy/local-deploy.md` for target paths, env handling, process management,
+nginx registration, Prisma baseline safety, and override variables. This local
+deployment path does not change the existing GHCR tag publishing workflow.
 
 The post-commit deploy workflow runs on pushes to `main` on the
 `self-hosted`/`homelab-deploy` runner. It deploys the exact pushed SHA through

@@ -7,11 +7,11 @@ OPS_DEPLOY ?= ./ops-deploy.sh
 
 help:
 	@echo "Targets:"
-	@echo "  make image-build                         Build the local Docker image"
+	@echo "  make image-build                         Build the local Docker image (GHCR release only)"
 	@echo "  make image-run                           Run the local Docker image"
 	@echo "  make deploy-image VERSION=v1.2.3         Push a release tag that publishes the image"
 	@echo "  make ops-deploy-check                    Validate local deployment prerequisites"
-	@echo "  make ops-deploy                          Deploy backend/admin/portal locally"
+	@echo "  make ops-deploy                          Deploy backend/admin/portal locally from source"
 
 image-build:
 	docker build -f deploy/Dockerfile -t $(IMAGE_NAME) .
