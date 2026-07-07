@@ -19,6 +19,21 @@ export function SiteShell({ children }: Readonly<{ children: ReactNode }>) {
         </nav>
       </header>
       {children}
+      <footer className="site-footer" aria-label="Portal shortcuts">
+        <div className="footer-inner">
+          <div>
+            <p className="footer-heading">Quick links</p>
+            <p className="footer-brand">Homelab Portal</p>
+          </div>
+          <nav className="footer-links" aria-label="Footer shortcuts">
+            <Link href="/">Home</Link>
+            <Link href="/articles">Articles</Link>
+            <a href="https://home.gfun.vip:8322/login" target="_blank" rel="noopener noreferrer">
+              Admin
+            </a>
+          </nav>
+        </div>
+      </footer>
     </div>
   );
 }
