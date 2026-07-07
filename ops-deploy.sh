@@ -26,6 +26,7 @@ RESULT_FILE="${HOMELAB_DEPLOY_RESULT_FILE:-${RUNTIME_DIR}/deploy-result.json}"
 LOG_TAIL="${HOMELAB_LOG_TAIL:-120}"
 DEPLOY_COMMIT_SHA=""
 RESULT_WRITTEN=0
+declare -A LOG_START_BYTES=()
 
 CHECK_ONLY=0
 SKIP_GIT=0
@@ -374,6 +375,8 @@ restart_services() {
   write_systemd_service "admin" "${ADMIN_PORT}" "exec next start -p ${ADMIN_PORT}" "@homelab/admin" "Environment=ADMIN_BACKEND_URL=http://127.0.0.1:${BACKEND_PORT}"
   write_systemd_service "portal" "${PORTAL_PORT}" "exec next start -p ${PORTAL_PORT}" "@homelab/portal" "Environment=NEXT_PUBLIC_SITE_URL=https://${DOMAIN}:8321"
 
+  record_log_start_bytes
+
   systemctl --user daemon-reload
   systemctl --user stop homelab-backend homelab-admin homelab-portal 2>/dev/null || true
   systemctl --user enable homelab-backend homelab-admin homelab-portal
@@ -406,19 +409,56 @@ wait_for_services() {
   sleep 3
 }
 
+read_file_size() {
+  local path="$1"
+  local bytes
+
+  if [ ! -f "${path}" ]; then
+    echo 0
+    return
+  fi
+
+  bytes="$(wc -c < "${path}" 2>/dev/null || printf "0")"
+  bytes="${bytes//[!0-9]/}"
+  [ -n "${bytes}" ] || bytes=0
+  echo "${bytes}"
+}
+
+record_log_start_bytes() {
+  local service log_file bytes
+
+  echo "Capturing service log offsets before restart."
+  for service in backend admin portal; do
+    log_file="${LOG_DIR}/${service}.log"
+    bytes="$(read_file_size "${log_file}")"
+    LOG_START_BYTES["${service}"]="${bytes}"
+    echo "Log baseline for ${service}: ${bytes} bytes"
+  done
+}
+
 check_logs() {
   stage "log check"
-  local service
+  local service log_file start_byte current_size scan_start error_file
   for service in backend admin portal; do
-    echo "Checking recent logs for ${service}"
-    if [ -f "${LOG_DIR}/${service}.log" ]; then
-      if grep -Eai "(exception|fatal|panic|failed|error)" "${LOG_DIR}/${service}.log" | tail -n "${LOG_TAIL}" >/tmp/homelab-${service}-deploy-errors.log; then
-        if [ -s /tmp/homelab-${service}-deploy-errors.log ]; then
-          cat /tmp/homelab-${service}-deploy-errors.log >&2
-          die "Recent ${service} logs contain error patterns"
+    log_file="${LOG_DIR}/${service}.log"
+    error_file="/tmp/homelab-${service}-deploy-errors.log"
+    rm -f "${error_file}"
+    if [ -f "${log_file}" ]; then
+      start_byte="${LOG_START_BYTES[$service]:-0}"
+      current_size="$(read_file_size "${log_file}")"
+      if [ "${current_size}" -lt "${start_byte}" ]; then
+        start_byte=0
+      fi
+      scan_start=$((start_byte + 1))
+      echo "Checking ${service} logs written after restart byte offset ${start_byte}"
+      if tail -c "+${scan_start}" "${log_file}" 2>/dev/null | grep -Eai "(exception|fatal|panic|failed|error)" | tail -n "${LOG_TAIL}" >"${error_file}"; then
+        if [ -s "${error_file}" ]; then
+          cat "${error_file}" >&2
+          die "New ${service} logs since restart contain error patterns"
         fi
       fi
     fi
+    rm -f "${error_file}"
   done
 }
 

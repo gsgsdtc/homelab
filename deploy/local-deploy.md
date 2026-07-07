@@ -118,8 +118,9 @@ backend service after deploy.
 - nginx registration updates the existing
   `/home/gsg/workspace/app/nginx/config/default.conf` Homelab proxy targets,
   runs `nginx -t`, then reloads or restarts the nginx container.
-- Recent service logs are scanned for fatal/error patterns before the final
-  public probes.
+- Service logs written after the current restart are scanned for fatal/error
+  patterns before the final public probes; historical append logs are not
+  blocking.
 - Every deployment writes a QA-readable JSON result to
   `/home/gsg/workspace/project/homelab/deploy/deploy-result.json`, or to
   `HOMELAB_DEPLOY_RESULT_FILE` when that override is set.

@@ -129,7 +129,7 @@ without printing token values.
 `deploy.sh` is the repeatable target-host deployment entry for
 `/home/gsg/workspace/project/homelab`. It delegates to `ops-deploy.sh`, which
 keeps the detailed implementation for source sync, build, restart, nginx reload,
-log inspection, public health checks, and deploy-result writeback.
+post-restart log inspection, public health checks, and deploy-result writeback.
 
 ```bash
 ./deploy.sh --check-only
