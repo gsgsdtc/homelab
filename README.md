@@ -149,7 +149,16 @@ See `deploy/local-deploy.md` for target paths, env handling, nginx registration,
 Prisma baseline safety, and override variables. This local deployment path does
 not change the existing GHCR tag publishing workflow.
 
-The post-commit deploy workflow runs on pushes to `main` on the
-`self-hosted`/`homelab-deploy` runner. It deploys the exact pushed SHA through
+The post-commit deploy workflow runs on pushes to `main` on `ubuntu-latest`,
+connects to the deployment host over SSH, deploys the exact pushed SHA through
 `ops-deploy.sh`, uploads the deploy result as `homelab-deploy-result`, and skips
 the QA E2E handoff unless the Stage 2 deployment succeeded.
+
+Required repository configuration for the remote deploy workflow:
+
+- Secret `HOMELAB_DEPLOY_SSH_KEY`: private key allowed to SSH to the target host.
+- Secret `HOMELAB_DEPLOY_SSH_KNOWN_HOSTS`: optional pinned SSH host key. If it is
+  absent, the workflow uses `ssh-keyscan` for the configured host.
+- Variable `HOMELAB_DEPLOY_SSH_HOST`: target host, defaults to `home.gfun.vip`.
+- Variable `HOMELAB_DEPLOY_SSH_USER`: target user, defaults to `gsg`.
+- Variable `HOMELAB_DEPLOY_SSH_PORT`: target SSH port, defaults to `22`.

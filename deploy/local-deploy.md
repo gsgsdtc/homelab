@@ -42,6 +42,23 @@ HOMELAB_ENV_SOURCE=/git/vps-config/app/homelab/.env ./ops-deploy.sh
 HOMELAB_PROJECT_ROOT=/home/gsg/workspace/project/homelab ./ops-deploy.sh
 ```
 
+## GitHub Actions remote deploy
+
+`.github/workflows/post-commit-deploy.yml` runs the deploy job on
+`ubuntu-latest` and connects to the target host over SSH. The workflow syncs the
+target checkout to the exact commit SHA being deployed, runs
+`./ops-deploy.sh --skip-git` on the target, then copies
+`deploy-result.json` and `deploy.log` back into the GitHub Actions artifact.
+
+Required repository configuration:
+
+- Secret `HOMELAB_DEPLOY_SSH_KEY`: private key allowed to SSH to the target host.
+- Secret `HOMELAB_DEPLOY_SSH_KNOWN_HOSTS`: optional pinned SSH host key. If it is
+  absent, the workflow uses `ssh-keyscan` for the configured host.
+- Variable `HOMELAB_DEPLOY_SSH_HOST`: target host, defaults to `home.gfun.vip`.
+- Variable `HOMELAB_DEPLOY_SSH_USER`: target user, defaults to `gsg`.
+- Variable `HOMELAB_DEPLOY_SSH_PORT`: target SSH port, defaults to `22`.
+
 ## Safety gates
 
 - The script checks `git`, Docker Compose v2, `curl`, the nginx container, and

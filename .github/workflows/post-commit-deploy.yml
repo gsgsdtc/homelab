@@ -18,9 +18,7 @@ concurrency:
 jobs:
   deploy:
     name: Stage 2 Deploy
-    runs-on:
-      - self-hosted
-      - homelab-deploy
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
@@ -31,14 +29,19 @@ jobs:
       result_artifact: homelab-deploy-result
     env:
       DEPLOY_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.git_ref || github.sha }}
-      DEPLOY_RESULT_FILE: /home/gsg/workspace/project/homelab/deploy/deploy-result.json
-      DEPLOY_LOG_FILE: /home/gsg/workspace/project/homelab/deploy/deploy.log
+      DEPLOY_RESULT_FILE: deploy-result/deploy-result.json
+      DEPLOY_LOG_FILE: deploy-result/deploy.log
+      REMOTE_DEPLOY_RESULT_FILE: /home/gsg/workspace/project/homelab/deploy/deploy-result.json
+      REMOTE_DEPLOY_LOG_FILE: /home/gsg/workspace/project/homelab/deploy/deploy.log
+      DEPLOY_SSH_HOST: ${{ vars.HOMELAB_DEPLOY_SSH_HOST || 'home.gfun.vip' }}
+      DEPLOY_SSH_USER: ${{ vars.HOMELAB_DEPLOY_SSH_USER || 'gsg' }}
+      DEPLOY_SSH_PORT: ${{ vars.HOMELAB_DEPLOY_SSH_PORT || '22' }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Prepare deploy result paths
+      - name: Prepare local artifact paths
         shell: bash
         run: |
           set -euo pipefail
@@ -64,19 +67,106 @@ jobs:
           fi
           echo "Deploying ${DEPLOY_REF}"
 
-      - name: Run Stage 2 deploy entry
+      - name: Prepare SSH access
         shell: bash
         env:
-          HOMELAB_GIT_REF: ${{ env.DEPLOY_REF }}
-          HOMELAB_DEPLOY_RESULT_FILE: ${{ env.DEPLOY_RESULT_FILE }}
-          HOMELAB_DEPLOY_TRIGGER: github-actions
-          HOMELAB_DEPLOY_TRIGGER_REF: ${{ github.ref }}
-          HOMELAB_DEPLOY_TRIGGER_SHA: ${{ github.sha }}
-          HOMELAB_DEPLOY_TRIGGER_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HOMELAB_DEPLOY_SSH_KEY: ${{ secrets.HOMELAB_DEPLOY_SSH_KEY }}
+          HOMELAB_DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.HOMELAB_DEPLOY_SSH_KNOWN_HOSTS }}
         run: |
-          set -o pipefail
+          set -euo pipefail
+          if [ -z "${DEPLOY_SSH_HOST}" ] || [ -z "${DEPLOY_SSH_USER}" ] || [ -z "${DEPLOY_SSH_PORT}" ]; then
+            echo "::error::HOMELAB_DEPLOY_SSH_HOST, HOMELAB_DEPLOY_SSH_USER, and HOMELAB_DEPLOY_SSH_PORT must resolve to non-empty values."
+            exit 1
+          fi
+          if [ -z "${HOMELAB_DEPLOY_SSH_KEY:-}" ]; then
+            echo "::error::HOMELAB_DEPLOY_SSH_KEY secret is not configured."
+            exit 1
+          fi
+
+          install -m 700 -d "${HOME}/.ssh"
+          printf "%s\n" "${HOMELAB_DEPLOY_SSH_KEY}" > "${HOME}/.ssh/homelab_deploy_key"
+          chmod 600 "${HOME}/.ssh/homelab_deploy_key"
+
+          if [ -n "${HOMELAB_DEPLOY_SSH_KNOWN_HOSTS:-}" ]; then
+            printf "%s\n" "${HOMELAB_DEPLOY_SSH_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
+          else
+            ssh-keyscan -p "${DEPLOY_SSH_PORT}" "${DEPLOY_SSH_HOST}" > "${HOME}/.ssh/known_hosts"
+          fi
+          chmod 600 "${HOME}/.ssh/known_hosts"
+
+      - name: Run Stage 2 deploy entry
+        shell: bash
+        run: |
+          set -euo pipefail
           mkdir -p "$(dirname "${DEPLOY_LOG_FILE}")"
-          ./ops-deploy.sh 2>&1 | tee "${DEPLOY_LOG_FILE}"
+
+          ssh_target="${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}"
+          ssh_opts=(
+            -i "${HOME}/.ssh/homelab_deploy_key"
+            -p "${DEPLOY_SSH_PORT}"
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+          )
+          scp_opts=(
+            -i "${HOME}/.ssh/homelab_deploy_key"
+            -P "${DEPLOY_SSH_PORT}"
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+          )
+
+          cat > remote-deploy.sh <<'REMOTE_DEPLOY'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          : "${DEPLOY_REF:?DEPLOY_REF is required}"
+          : "${HOMELAB_DEPLOY_RESULT_FILE:?HOMELAB_DEPLOY_RESULT_FILE is required}"
+          : "${HOMELAB_DEPLOY_LOG_FILE:?HOMELAB_DEPLOY_LOG_FILE is required}"
+
+          PROJECT_ROOT="${HOMELAB_PROJECT_ROOT:-/home/gsg/workspace/project/homelab}"
+          SOURCE_DIR="${HOMELAB_SOURCE_DIR:-${PROJECT_ROOT}/source}"
+          RUNTIME_DIR="${HOMELAB_RUNTIME_DIR:-${PROJECT_ROOT}/deploy}"
+          REPO_URL="${HOMELAB_REPO_URL:-git@github.com:gsgsdtc/homelab.git}"
+
+          mkdir -p "${PROJECT_ROOT}" "${RUNTIME_DIR}" "$(dirname "${HOMELAB_DEPLOY_RESULT_FILE}")" "$(dirname "${HOMELAB_DEPLOY_LOG_FILE}")"
+          rm -f "${HOMELAB_DEPLOY_RESULT_FILE}" "${HOMELAB_DEPLOY_LOG_FILE}"
+
+          if [ ! -d "${SOURCE_DIR}/.git" ]; then
+            git clone "${REPO_URL}" "${SOURCE_DIR}"
+          fi
+
+          git -C "${SOURCE_DIR}" fetch --prune origin main
+          git -C "${SOURCE_DIR}" checkout --detach "${DEPLOY_REF}"
+
+          cd "${SOURCE_DIR}"
+          set -o pipefail
+          HOMELAB_GIT_REF="${DEPLOY_REF}" ./ops-deploy.sh --skip-git 2>&1 | tee "${HOMELAB_DEPLOY_LOG_FILE}"
+          REMOTE_DEPLOY
+
+          scp "${scp_opts[@]}" remote-deploy.sh "${ssh_target}:/tmp/homelab-remote-deploy.sh"
+
+          printf -v remote_cmd \
+            'DEPLOY_REF=%q HOMELAB_DEPLOY_RESULT_FILE=%q HOMELAB_DEPLOY_LOG_FILE=%q HOMELAB_DEPLOY_TRIGGER=%q HOMELAB_DEPLOY_TRIGGER_REF=%q HOMELAB_DEPLOY_TRIGGER_SHA=%q HOMELAB_DEPLOY_TRIGGER_RUN_URL=%q bash /tmp/homelab-remote-deploy.sh' \
+            "${DEPLOY_REF}" \
+            "${REMOTE_DEPLOY_RESULT_FILE}" \
+            "${REMOTE_DEPLOY_LOG_FILE}" \
+            "github-actions" \
+            "${{ github.ref }}" \
+            "${{ github.sha }}" \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          set +e
+          ssh "${ssh_opts[@]}" "${ssh_target}" "${remote_cmd}"
+          deploy_rc=$?
+          scp "${scp_opts[@]}" "${ssh_target}:${REMOTE_DEPLOY_RESULT_FILE}" "${DEPLOY_RESULT_FILE}"
+          result_copy_rc=$?
+          scp "${scp_opts[@]}" "${ssh_target}:${REMOTE_DEPLOY_LOG_FILE}" "${DEPLOY_LOG_FILE}" || true
+          set -e
+
+          if [ "${result_copy_rc}" -ne 0 ]; then
+            echo "::error::Failed to copy remote deploy result from ${REMOTE_DEPLOY_RESULT_FILE}."
+            exit "${result_copy_rc}"
+          fi
+          exit "${deploy_rc}"
 
       - name: Read deploy result
         id: deploy_result
@@ -248,4 +338,3 @@ jobs:
             echo "- rewrite: ${rewrite_url}"
           } >> "${GITHUB_STEP_SUMMARY}"
           echo "QA trigger comment posted successfully."
-
