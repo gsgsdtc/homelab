@@ -76,7 +76,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p "$(dirname "${DEPLOY_LOG_FILE}")"
-          ./ops-deploy.sh 2>&1 | tee "${DEPLOY_LOG_FILE}"
+          ./deploy.sh 2>&1 | tee "${DEPLOY_LOG_FILE}"
 
       - name: Read deploy result
         id: deploy_result
@@ -248,4 +248,3 @@ jobs:
             echo "- rewrite: ${rewrite_url}"
           } >> "${GITHUB_STEP_SUMMARY}"
           echo "QA trigger comment posted successfully."
-
