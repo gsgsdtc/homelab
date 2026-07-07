@@ -7,7 +7,8 @@
     "dev": "next dev -p 3002",
     "build": "next build",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json --noEmit"
+    "test": "tsc -p tsconfig.json --noEmit",
+    "start": "next start -p 3002"
   },
   "dependencies": {
     "@homelab/views": "workspace:*",
