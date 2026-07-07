@@ -1,7 +1,7 @@
 IMAGE_NAME ?= homelab:local
 ENV_FILE ?= apps/backend/.env
 PORT ?= 3000
-OPS_DEPLOY ?= ./ops-deploy.sh
+OPS_DEPLOY ?= ./deploy.sh
 
 .PHONY: help image-build image-run deploy-image check-release-version ops-deploy ops-deploy-check
 

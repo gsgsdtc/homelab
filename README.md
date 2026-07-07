@@ -126,30 +126,60 @@ without printing token values.
 
 ## Local Host Deployment
 
-`ops-deploy.sh` is the target-host deployment entry for
-`/home/gsg/workspace/project/homelab`. It syncs the configured Git ref, validates
-host dependencies and runtime env, builds backend/admin/portal Docker services,
-starts or restarts them, validates nginx, checks recent logs, probes public
-health URLs, writes `/home/gsg/workspace/project/homelab/deploy/deploy-result.json`,
-and prints QA-accessible URLs.
+`deploy.sh` is the repeatable target-host deployment entry for
+`/home/gsg/workspace/project/homelab`. It delegates to `ops-deploy.sh`, which
+keeps the detailed implementation for source sync, build, restart, nginx reload,
+post-restart log inspection, public health checks, and deploy-result writeback.
 
 ```bash
+./deploy.sh --check-only
+./deploy.sh
+
 make ops-deploy-check
 make ops-deploy
 ```
 
-The Stage 1 public URL contract is:
+Target paths:
+
+- Source checkout: `/home/gsg/workspace/project/homelab/source`
+- Runtime files: `/home/gsg/workspace/project/homelab/deploy`
+- Runtime env: `/home/gsg/workspace/project/homelab/deploy/.env`
+- Logs: `/home/gsg/workspace/project/homelab/deploy/logs`
+- Result: `/home/gsg/workspace/project/homelab/deploy/deploy-result.json`
+
+Build commands run by the deploy script:
+
+- `CI=true NODE_ENV=development pnpm install --frozen-lockfile`
+- `pnpm --filter @homelab/backend build`
+- `pnpm --filter @homelab/admin build`
+- `pnpm --filter @homelab/portal build`
+
+Runtime services are user systemd units:
+
+- `homelab-backend` on `127.0.0.1:3005`
+- `homelab-admin` on `127.0.0.1:3006`
+- `homelab-portal` on `127.0.0.1:3007`
+
+The restart step writes the units under `$HOME/.config/systemd/user`, runs
+`systemctl --user daemon-reload`, stops existing services, truncates the three
+service logs, then enables and starts all three services.
+Required runtime env is stored in the target `.env` file: `DATABASE_URL`,
+`JWT_SECRET`, and optional `JWT_EXPIRES_IN`, `INITIAL_ADMIN_USERNAME`,
+`INITIAL_ADMIN_PASSWORD`, `ADMIN_BACKEND_URL`, and
+`NEXT_PUBLIC_ADMIN_API_BASE_URL`.
+
+Public URL contract:
 
 - Portal: `https://home.gfun.vip:8321/`
 - Admin: `https://home.gfun.vip:8322/login`
 - Backend: `https://home.gfun.vip:8323/health`
 - Admin rewrite: `https://home.gfun.vip:8322/api/backend/health`
 
-See `deploy/local-deploy.md` for target paths, env handling, nginx registration,
-Prisma baseline safety, and override variables. This local deployment path does
-not change the existing GHCR tag publishing workflow.
+See `deploy/local-deploy.md` for operator steps, override variables, and nginx
+assumptions. This local deployment path does not change the
+existing GHCR tag publishing workflow.
 
 The post-commit deploy workflow runs on pushes to `main` on the
 `self-hosted`/`homelab-deploy` runner. It deploys the exact pushed SHA through
-`ops-deploy.sh`, uploads the deploy result as `homelab-deploy-result`, and skips
-the QA E2E handoff unless the Stage 2 deployment succeeded.
+`deploy.sh`, uploads the deploy result as `homelab-deploy-result`, and skips the
+QA E2E handoff unless the Stage 2 deployment succeeded.
