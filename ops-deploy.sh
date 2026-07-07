@@ -8,6 +8,7 @@ PROJECT_ROOT="${HOMELAB_PROJECT_ROOT:-/home/gsg/workspace/project/homelab}"
 SOURCE_DIR="${HOMELAB_SOURCE_DIR:-${PROJECT_ROOT}/source}"
 RUNTIME_DIR="${HOMELAB_RUNTIME_DIR:-${PROJECT_ROOT}/deploy}"
 ENV_FILE="${HOMELAB_ENV_FILE:-${RUNTIME_DIR}/.env}"
+ENV_TEMPLATE="${HOMELAB_ENV_TEMPLATE:-${SOURCE_DIR}/deploy/env.local.example}"
 LOG_DIR="${RUNTIME_DIR}/logs"
 USER_SYSTEMD_DIR="${HOMELAB_USER_SYSTEMD_DIR:-$HOME/.config/systemd/user}"
 REPO_URL="${HOMELAB_REPO_URL:-git@github.com:gsgsdtc/homelab.git}"
@@ -32,7 +33,7 @@ SKIP_NGINX=0
 
 usage() {
   cat <<USAGE
-Usage: ./ops-deploy.sh [--check-only] [--skip-git] [--skip-nginx]
+Usage: ./deploy.sh [--check-only] [--skip-git] [--skip-nginx]
 
 Environment overrides:
   HOMELAB_PROJECT_ROOT       default: /home/gsg/workspace/project/homelab
@@ -40,6 +41,7 @@ Environment overrides:
   HOMELAB_RUNTIME_DIR        default: \$HOMELAB_PROJECT_ROOT/deploy
   HOMELAB_ENV_FILE           default: \$HOMELAB_RUNTIME_DIR/.env
   HOMELAB_ENV_SOURCE         optional source file copied to HOMELAB_ENV_FILE
+  HOMELAB_ENV_TEMPLATE       default: \$HOMELAB_SOURCE_DIR/deploy/env.local.example
   HOMELAB_GIT_REF            branch/tag/SHA to deploy, default: main
   HOMELAB_DEPLOY_RESULT_FILE QA-readable JSON result path
   HOMELAB_DOMAIN             default: home.gfun.vip
@@ -131,6 +133,12 @@ write_deploy_result() {
     echo "  \"commit_sha\": \"$(json_escape "${commit}")\","
     echo "  \"source_dir\": \"$(json_escape "${SOURCE_DIR}")\","
     echo "  \"result_file\": \"$(json_escape "${RESULT_FILE}")\","
+    echo "  \"trigger\": {"
+    echo "    \"name\": \"$(json_escape "${HOMELAB_DEPLOY_TRIGGER:-manual}")\","
+    echo "    \"ref\": \"$(json_escape "${HOMELAB_DEPLOY_TRIGGER_REF:-}")\","
+    echo "    \"sha\": \"$(json_escape "${HOMELAB_DEPLOY_TRIGGER_SHA:-}")\","
+    echo "    \"run_url\": \"$(json_escape "${HOMELAB_DEPLOY_TRIGGER_RUN_URL:-}")\""
+    echo "  },"
     if [ "${status}" = "success" ]; then
       echo "  \"urls\": {"
       echo "    \"portal\": \"https://$(json_escape "${DOMAIN}"):8321/\","
@@ -216,17 +224,23 @@ prepare_config() {
   stage "configuration"
   mkdir -p "${RUNTIME_DIR}" "${LOG_DIR}" "${USER_SYSTEMD_DIR}"
   if [ ! -f "${ENV_FILE}" ]; then
-    if [ -n "${HOMELAB_ENV_SOURCE:-}" ] && [ -f "${HOMELAB_ENV_SOURCE}" ]; then
+    if [ -n "${HOMELAB_ENV_SOURCE:-}" ]; then
+      [ -f "${HOMELAB_ENV_SOURCE}" ] || die "HOMELAB_ENV_SOURCE is missing: ${HOMELAB_ENV_SOURCE}"
       install -m 600 "${HOMELAB_ENV_SOURCE}" "${ENV_FILE}"
     else
-      install -m 600 "${SOURCE_DIR}/.env.example" "${ENV_FILE}"
-      die "Created ${ENV_FILE} from .env.example. Fill the required secrets and rerun."
+      [ -f "${ENV_TEMPLATE}" ] || die "Env template is missing: ${ENV_TEMPLATE}"
+      install -m 600 "${ENV_TEMPLATE}" "${ENV_FILE}"
+      die "Created ${ENV_FILE} from ${ENV_TEMPLATE}. Fill the required secrets and rerun."
     fi
   fi
   chmod 600 "${ENV_FILE}"
 
   # Point admin rewrite to the direct backend on the host loopback.
-  sed -i "s|^ADMIN_BACKEND_URL=.*|ADMIN_BACKEND_URL=http://127.0.0.1:${BACKEND_PORT}|" "${ENV_FILE}"
+  if grep -q "^ADMIN_BACKEND_URL=" "${ENV_FILE}"; then
+    sed -i "s|^ADMIN_BACKEND_URL=.*|ADMIN_BACKEND_URL=http://127.0.0.1:${BACKEND_PORT}|" "${ENV_FILE}"
+  else
+    printf "\nADMIN_BACKEND_URL=http://127.0.0.1:%s\n" "${BACKEND_PORT}" >> "${ENV_FILE}"
+  fi
 
   # Basic validation
   local db_url jwt_secret
@@ -234,6 +248,9 @@ prepare_config() {
   jwt_secret="$(grep -E "^JWT_SECRET=" "${ENV_FILE}" | tail -n1 | cut -d= -f2- || true)"
   if [ -z "${db_url}" ] || [ -z "${jwt_secret}" ]; then
     die "DATABASE_URL and JWT_SECRET must be set in ${ENV_FILE}"
+  fi
+  if [[ "${db_url}" == *change-me* ]] || [[ "${jwt_secret}" == *change-me* ]]; then
+    die "Replace placeholder DATABASE_URL and JWT_SECRET values in ${ENV_FILE}"
   fi
   echo "Runtime env file validated: ${ENV_FILE}"
 }
