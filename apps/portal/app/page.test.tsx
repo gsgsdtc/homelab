@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
+import { homelabServiceLinks } from "../lib/service-links";
 import HomePage, { metadata } from "./page";
 
 describe("portal home page", () => {
@@ -29,5 +30,22 @@ describe("portal home page", () => {
         name: "Homelab server nodes and an operations dashboard"
       })
     ).toHaveAttribute("src", expect.stringContaining("homelab-portal-hero.png"));
+  });
+
+  it("renders all homelab service shortcuts in the configured order", () => {
+    render(<HomePage />);
+
+    const serviceNavigation = screen.getByRole("navigation", {
+      name: "Homelab service shortcuts"
+    });
+    const links = within(serviceNavigation).getAllByRole("link");
+
+    expect(links).toHaveLength(16);
+    expect(links.map((link) => link.textContent)).toEqual(
+      homelabServiceLinks.map(({ title, href }) => expect.stringContaining(`${title}${href}`))
+    );
+    expect(links.map((link) => link.getAttribute("href"))).toEqual(
+      homelabServiceLinks.map(({ href }) => href)
+    );
   });
 });

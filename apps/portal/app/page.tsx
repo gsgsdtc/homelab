@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 
+import { homelabServiceLinks } from "../lib/service-links";
+
 export const metadata: Metadata = {
   title: "Homelab Portal | Private cloud operations",
   description:
@@ -62,6 +64,32 @@ export default function HomePage() {
           />
           <figcaption>SEO-ready public gateway for homelab operations.</figcaption>
         </figure>
+      </section>
+
+      <section className="service-shortcuts section" aria-labelledby="service-shortcuts-title">
+        <div className="section-heading">
+          <p className="eyebrow">Service shortcuts</p>
+          <h2 id="service-shortcuts-title">Homelab services</h2>
+        </div>
+        <nav className="service-grid" aria-label="Homelab service shortcuts">
+          {homelabServiceLinks.map((service) => (
+            <a
+              className="service-link"
+              href={service.href}
+              key={`${service.title}-${service.href}`}
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              <span className="service-icon" aria-hidden="true">
+                {service.icon}
+              </span>
+              <span className="service-copy">
+                <span className="service-title">{service.title}</span>
+                <span className="service-url">{service.href}</span>
+              </span>
+            </a>
+          ))}
+        </nav>
       </section>
 
       <section id="platform" className="content-band" aria-labelledby="platform-title">
