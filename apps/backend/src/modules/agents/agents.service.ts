@@ -2,8 +2,9 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import { Agent, AgentStatus } from "@prisma/client";
 import { randomUUID } from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
-import { AgentWorkspaceService } from "./agent-workspace.service";
+import { AgentSoulFileStatus, AgentSoulRead, AgentWorkspaceService } from "./agent-workspace.service";
 import { CreateAgentDto } from "./dto/create-agent.dto";
+import { SaveAgentSoulDto } from "./dto/save-agent-soul.dto";
 import { UpdateAgentDto } from "./dto/update-agent.dto";
 
 export interface AgentInitError {
@@ -19,6 +20,9 @@ export interface PublicAgent {
   workspaceName: string;
   initError: AgentInitError | null;
   gitStatus: "available" | "unavailable";
+  soul?: string | null;
+  soulFileStatus?: AgentSoulFileStatus;
+  soulFileError?: string;
 }
 
 @Injectable()
@@ -37,10 +41,11 @@ export class AgentsService {
 
   async get(id: string): Promise<PublicAgent> {
     const agent = await this.findAgent(id);
-    return this.toPublic(agent);
+    return this.toPublic(agent, await this.workspaces.readSoul(agent));
   }
 
   async create(dto: CreateAgentDto): Promise<PublicAgent> {
+    const soul = this.normalizeSoul(dto.soul, { allowDefault: true, agentName: dto.name });
     this.assertNoSecretLeak(dto);
     const slug = this.buildSlug(dto.slug ?? dto.name);
     const id = randomUUID();
@@ -55,7 +60,7 @@ export class AgentsService {
         workspacePath: descriptor.relativeWorkspacePath,
         modelProvider: dto.modelProvider,
         modelSecretRef: dto.modelSecretRef,
-        soul: dto.soul ?? ""
+        soul
       }
     });
 
@@ -64,6 +69,7 @@ export class AgentsService {
   }
 
   async update(id: string, dto: UpdateAgentDto): Promise<PublicAgent> {
+    const soul = this.normalizeSoul(dto.soul, { allowDefault: false });
     this.assertNoSecretLeak(dto);
     const previousAgent = await this.findAgent(id);
     const agent = await this.prisma.agent.update({
@@ -72,12 +78,32 @@ export class AgentsService {
         name: dto.name,
         modelProvider: dto.modelProvider,
         modelSecretRef: dto.modelSecretRef,
-        soul: dto.soul
+        soul
       }
     });
 
     const initialized = await this.syncAgentWorkspace(agent, previousAgent);
     return this.toPublic(initialized);
+  }
+
+  async saveSoul(id: string, dto: SaveAgentSoulDto): Promise<PublicAgent> {
+    const soul = this.normalizeSoul(dto.soul, { allowDefault: false });
+    if (soul === undefined) {
+      throw new BadRequestException("soul content must not be blank");
+    }
+    this.assertNoSecretLeak({ soul });
+    const agent = await this.findAgent(id);
+    await this.workspaces.writeSoul(agent, soul);
+    await this.prisma.agent.update({
+      where: { id },
+      data: { soul }
+    });
+    return this.get(id);
+  }
+
+  async loadSoulForRun(id: string): Promise<string> {
+    const agent = await this.findAgent(id);
+    return this.workspaces.readSoulForRun(agent);
   }
 
   async retryInitialization(id: string): Promise<PublicAgent> {
@@ -175,12 +201,12 @@ export class AgentsService {
     return slug;
   }
 
-  private assertNoSecretLeak(dto: CreateAgentDto | UpdateAgentDto): void {
+  private assertNoSecretLeak(dto: CreateAgentDto | UpdateAgentDto | SaveAgentSoulDto): void {
     const fields: Array<[string, string | undefined]> = [
-      ["name", dto.name],
+      ["name", "name" in dto ? dto.name : undefined],
       ["slug", "slug" in dto ? dto.slug : undefined],
-      ["modelProvider", dto.modelProvider],
-      ["modelSecretRef", dto.modelSecretRef],
+      ["modelProvider", "modelProvider" in dto ? dto.modelProvider : undefined],
+      ["modelSecretRef", "modelSecretRef" in dto ? dto.modelSecretRef : undefined],
       ["soul", dto.soul]
     ];
 
@@ -203,8 +229,8 @@ export class AgentsService {
     ].some((pattern) => pattern.test(value));
   }
 
-  private toPublic(agent: Agent): PublicAgent {
-    return {
+  private toPublic(agent: Agent, soul?: AgentSoulRead): PublicAgent {
+    const output: PublicAgent = {
       id: agent.id,
       name: agent.name,
       status: agent.status,
@@ -213,6 +239,27 @@ export class AgentsService {
       initError: this.toInitError(agent),
       gitStatus: this.workspaces.getGitStatus()
     };
+    if (soul) {
+      output.soul = soul.content;
+      output.soulFileStatus = soul.status;
+      if (soul.message) {
+        output.soulFileError = soul.message;
+      }
+    }
+    return output;
+  }
+
+  private normalizeSoul(
+    soul: string | undefined,
+    options: { allowDefault: boolean; agentName?: string }
+  ): string | undefined {
+    if (soul === undefined) {
+      return options.allowDefault ? `# ${options.agentName}\n` : undefined;
+    }
+    if (soul.trim().length === 0) {
+      throw new BadRequestException("soul content must not be blank");
+    }
+    return soul;
   }
 
   private toInitError(agent: Agent): AgentInitError | null {

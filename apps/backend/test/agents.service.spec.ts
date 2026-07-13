@@ -25,11 +25,17 @@ describe("AgentsService", () => {
     buildDescriptor: jest.fn(),
     initializeWorkspace: jest.fn(),
     syncWorkspace: jest.fn(),
+    readSoul: jest.fn(),
+    writeSoul: jest.fn(),
+    readSoulForRun: jest.fn(),
     getGitStatus: jest.fn(() => "available")
   } as unknown as AgentWorkspaceService & {
     buildDescriptor: jest.Mock;
     initializeWorkspace: jest.Mock;
     syncWorkspace: jest.Mock;
+    readSoul: jest.Mock;
+    writeSoul: jest.Mock;
+    readSoulForRun: jest.Mock;
     getGitStatus: jest.Mock;
   };
 
@@ -45,6 +51,7 @@ describe("AgentsService", () => {
     prisma.agent.update.mockImplementation(async ({ where, data }: { where: { id: string }; data: any }) =>
       agentFrom({ id: where.id, ...data })
     );
+    workspaces.readSoul.mockResolvedValue({ content: "Workspace soul.", status: "loaded" });
   });
 
   it("creates an Agent, initializes its workspace, and marks it ready", async () => {
@@ -255,13 +262,17 @@ describe("AgentsService", () => {
         workspacePath: ".homelab/agents/ops-agent--agent123",
         workspaceName: "ops-agent--agent123",
         initError: item.expectedInitError,
-        gitStatus: "available"
+        gitStatus: "available",
+        soul: "Workspace soul.",
+        soulFileStatus: "loaded"
       });
       expect(Object.keys(result).sort()).toEqual([
         "gitStatus",
         "id",
         "initError",
         "name",
+        "soul",
+        "soulFileStatus",
         "status",
         "workspaceName",
         "workspacePath"
@@ -325,17 +336,17 @@ describe("AgentsService", () => {
     );
   });
 
-  it("does not clear an update user-edit conflict and mark the Agent ready on retry", async () => {
+  it("does not clear a non-soul update user-edit conflict and mark the Agent ready on retry", async () => {
     const conflictedAgent = agentFrom({
       id: "agent-12345678",
       status: AgentStatus.init_failed,
       workspaceName: "ops-agent--agent123",
       workspacePath: ".homelab/agents/ops-agent--agent123",
       soul: "Updated soul.",
-      initializationError: "workspace file has user edits: soul.md"
+      initializationError: "workspace file has user edits: skills/skills.yaml"
     });
     prisma.agent.findUnique.mockResolvedValueOnce(conflictedAgent);
-    workspaces.syncWorkspace.mockRejectedValueOnce(new Error("workspace file has user edits: soul.md"));
+    workspaces.syncWorkspace.mockRejectedValueOnce(new Error("workspace file has user edits: skills/skills.yaml"));
     const service = new AgentsService(prisma, workspaces);
 
     const result = await service.retryInitialization("agent-12345678");
@@ -345,7 +356,7 @@ describe("AgentsService", () => {
     expect(result.status).toBe(AgentStatus.init_failed);
     expect(result.initError).toEqual({
       code: "WORKSPACE_INITIALIZATION_FAILED",
-      message: "workspace file has user edits: soul.md"
+      message: "workspace file has user edits: skills/skills.yaml"
     });
   });
 

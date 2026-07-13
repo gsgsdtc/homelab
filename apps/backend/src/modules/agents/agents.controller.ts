@@ -5,6 +5,7 @@ import { RolesGuard } from "../../common/guards/roles.guard";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { AgentsService } from "./agents.service";
 import { CreateAgentDto } from "./dto/create-agent.dto";
+import { SaveAgentSoulDto } from "./dto/save-agent-soul.dto";
 import { UpdateAgentDto } from "./dto/update-agent.dto";
 
 @Controller("agents")
@@ -31,6 +32,11 @@ export class AgentsController {
   @Patch(":id")
   update(@Param("id") id: string, @Body() dto: UpdateAgentDto) {
     return this.agents.update(id, dto);
+  }
+
+  @Patch(":id/soul")
+  saveSoul(@Param("id") id: string, @Body() dto: SaveAgentSoulDto) {
+    return this.agents.saveSoul(id, dto);
   }
 
   @Post(":id/retry-initialization")

@@ -30,6 +30,7 @@ export interface AppIdentity {
 
 export type AgentStatus = "initializing" | "ready" | "init_failed";
 export type AgentGitStatus = "available" | "unavailable" | "dirty" | "clean";
+export type AgentSoulFileStatus = "loaded" | "missing" | "error";
 
 export interface AgentInitError {
   code?: string;
@@ -47,6 +48,8 @@ export interface Agent {
   modelProvider?: string | null;
   modelSecretRef?: string | null;
   soul?: string | null;
+  soulFileStatus?: AgentSoulFileStatus;
+  soulFileError?: string;
   createdAt?: string;
   updatedAt?: string;
 }
