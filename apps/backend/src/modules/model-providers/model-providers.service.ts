@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { ModelProvider, ModelProviderType, Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateModelProviderDto } from "./dto/create-model-provider.dto";
@@ -22,7 +22,9 @@ export interface ResolvedModelProvider {
 export class ModelProvidersService {
   constructor(
     private readonly prisma: PrismaService,
+    @Inject(ModelProviderCredentialsService)
     private readonly credentials: Pick<ModelProviderCredentialsService, "encrypt" | "decrypt">,
+    @Inject(ModelProviderConnectionTester)
     private readonly connectionTester: Pick<ModelProviderConnectionTester, "test">
   ) {}
 
