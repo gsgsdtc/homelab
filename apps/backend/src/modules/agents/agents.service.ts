@@ -82,7 +82,9 @@ export class AgentsService {
 
   async retryInitialization(id: string): Promise<PublicAgent> {
     const agent = await this.findAgent(id);
-    const retried = await this.initializeAgent(agent, true);
+    const retried = this.hasWorkspaceUserEditConflict(agent)
+      ? await this.syncAgentWorkspace(agent, agent)
+      : await this.initializeAgent(agent, true);
     return this.toPublic(retried);
   }
 
@@ -152,6 +154,13 @@ export class AgentsService {
       throw new NotFoundException("agent not found");
     }
     return agent;
+  }
+
+  private hasWorkspaceUserEditConflict(agent: Agent): boolean {
+    return (
+      agent.status === AgentStatus.init_failed &&
+      (agent.initializationError ?? "").startsWith("workspace file has user edits:")
+    );
   }
 
   private buildSlug(input: string): string {

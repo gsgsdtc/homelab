@@ -325,6 +325,30 @@ describe("AgentsService", () => {
     );
   });
 
+  it("does not clear an update user-edit conflict and mark the Agent ready on retry", async () => {
+    const conflictedAgent = agentFrom({
+      id: "agent-12345678",
+      status: AgentStatus.init_failed,
+      workspaceName: "ops-agent--agent123",
+      workspacePath: ".homelab/agents/ops-agent--agent123",
+      soul: "Updated soul.",
+      initializationError: "workspace file has user edits: soul.md"
+    });
+    prisma.agent.findUnique.mockResolvedValueOnce(conflictedAgent);
+    workspaces.syncWorkspace.mockRejectedValueOnce(new Error("workspace file has user edits: soul.md"));
+    const service = new AgentsService(prisma, workspaces);
+
+    const result = await service.retryInitialization("agent-12345678");
+
+    expect(workspaces.syncWorkspace).toHaveBeenCalledWith(conflictedAgent, conflictedAgent);
+    expect(workspaces.initializeWorkspace).not.toHaveBeenCalled();
+    expect(result.status).toBe(AgentStatus.init_failed);
+    expect(result.initError).toEqual({
+      code: "WORKSPACE_INITIALIZATION_FAILED",
+      message: "workspace file has user edits: soul.md"
+    });
+  });
+
   function agentFrom(overrides: Partial<any>) {
     const now = new Date("2026-07-13T10:00:00Z");
     return {
