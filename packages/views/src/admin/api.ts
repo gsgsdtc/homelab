@@ -28,6 +28,37 @@ export interface AppIdentity {
   scopes: string[];
 }
 
+export type AgentStatus = "initializing" | "ready" | "init_failed";
+export type AgentGitStatus = "available" | "unavailable" | "dirty" | "clean";
+
+export interface AgentInitError {
+  code?: string;
+  message: string;
+}
+
+export interface Agent {
+  id: string;
+  name: string;
+  status: AgentStatus;
+  workspacePath: string | null;
+  workspaceName: string | null;
+  initError: AgentInitError | null;
+  gitStatus: AgentGitStatus;
+  modelProvider?: string | null;
+  modelSecretRef?: string | null;
+  soul?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AgentMutationPayload {
+  name?: string;
+  slug?: string;
+  modelProvider?: string;
+  modelSecretRef?: string;
+  soul?: string;
+}
+
 export interface LoginSession {
   accessToken: string;
   tokenType: "Bearer";
@@ -51,7 +82,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
-    readonly details?: unknown
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -112,7 +143,7 @@ export class AdminApiClient {
     const session = await this.request<LoginSession>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ username, password }),
-      auth: false
+      auth: false,
     });
     this.tokenStore.setToken(session.accessToken);
     return session;
@@ -126,28 +157,38 @@ export class AdminApiClient {
     return this.request<PageResult<PublicUser>>(`/users${toQuery(params)}`);
   }
 
-  createUser(payload: { username: string; password: string; role: UserRole; isActive: boolean }) {
+  createUser(payload: {
+    username: string;
+    password: string;
+    role: UserRole;
+    isActive: boolean;
+  }) {
     return this.request<PublicUser>("/users", {
       method: "POST",
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
   }
 
-  updateUser(id: string, payload: { username?: string; role?: UserRole; isActive?: boolean }) {
+  updateUser(
+    id: string,
+    payload: { username?: string; role?: UserRole; isActive?: boolean },
+  ) {
     return this.request<PublicUser>(`/users/${id}`, {
       method: "PATCH",
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
   }
 
   deleteUser(id: string) {
-    return this.request<{ deleted: true }>(`/users/${id}`, { method: "DELETE" });
+    return this.request<{ deleted: true }>(`/users/${id}`, {
+      method: "DELETE",
+    });
   }
 
   resetPassword(id: string, password: string) {
     return this.request<{ reset: true }>(`/users/${id}/reset-password`, {
       method: "POST",
-      body: JSON.stringify({ password })
+      body: JSON.stringify({ password }),
     });
   }
 
@@ -155,30 +196,71 @@ export class AdminApiClient {
     return this.request<AppKey[]>("/app-keys");
   }
 
-  createAppKey(payload: { name: string; agentName?: string; scopes?: string[]; expiresAt?: string }) {
+  createAppKey(payload: {
+    name: string;
+    agentName?: string;
+    scopes?: string[];
+    expiresAt?: string;
+  }) {
     return this.request<{ appKey: AppKey; key: string }>("/app-keys", {
       method: "POST",
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
   }
 
   revokeAppKey(id: string) {
-    return this.request<{ revoked: true }>(`/app-keys/${id}`, { method: "DELETE" });
+    return this.request<{ revoked: true }>(`/app-keys/${id}`, {
+      method: "DELETE",
+    });
   }
 
   getAppIdentity(appKey: string) {
     return this.request<AppIdentity>("/app-identity/me", {
       auth: false,
       headers: {
-        "X-App-Key": appKey
-      }
+        "X-App-Key": appKey,
+      },
     });
   }
 
-  private async request<T>(path: string, init: RequestInit & { auth?: boolean } = {}): Promise<T> {
+  listAgents() {
+    return this.request<Agent[]>("/agents");
+  }
+
+  getAgent(id: string) {
+    return this.request<Agent>(`/agents/${id}`);
+  }
+
+  createAgent(
+    payload: Required<Pick<AgentMutationPayload, "name">> &
+      AgentMutationPayload,
+  ) {
+    return this.request<Agent>("/agents", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  updateAgent(id: string, payload: AgentMutationPayload) {
+    return this.request<Agent>(`/agents/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  retryAgentInitialization(id: string) {
+    return this.request<Agent>(`/agents/${id}/retry-initialization`, {
+      method: "POST",
+    });
+  }
+
+  private async request<T>(
+    path: string,
+    init: RequestInit & { auth?: boolean } = {},
+  ): Promise<T> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      ...headersToRecord(init.headers)
+      ...headersToRecord(init.headers),
     };
 
     if (init.auth !== false) {
@@ -190,7 +272,7 @@ export class AdminApiClient {
 
     const response = await this.fetcher(`${this.baseUrl}${path}`, {
       ...init,
-      headers
+      headers,
     });
 
     if (!response.ok) {
@@ -198,7 +280,11 @@ export class AdminApiClient {
         this.tokenStore.clearToken();
       }
       const details = await readJson(response);
-      throw new ApiError(getErrorMessage(details, response.statusText), response.status, details);
+      throw new ApiError(
+        getErrorMessage(details, response.statusText),
+        response.status,
+        details,
+      );
     }
 
     return (await readJson(response)) as T;
