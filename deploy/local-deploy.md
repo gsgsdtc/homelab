@@ -102,6 +102,7 @@ Required in `/home/gsg/workspace/project/homelab/deploy/.env`:
 
 - `DATABASE_URL`
 - `JWT_SECRET`
+- `MODEL_PROVIDER_ENCRYPTION_KEY` (base64-encoded 32-byte key, for example from `openssl rand -base64 32`)
 
 Optional:
 
@@ -121,7 +122,8 @@ backend service after deploy.
   before build/start.
 - Missing env files are bootstrapped from `deploy/env.local.example`, then the
   script exits so an operator can replace placeholders.
-- Placeholder `DATABASE_URL` or `JWT_SECRET` values containing `change-me` fail
+- Placeholder `DATABASE_URL`, `JWT_SECRET`, or `MODEL_PROVIDER_ENCRYPTION_KEY`
+  values containing `change-me` fail
   the deployment.
 - Existing `homelab-backend`, `homelab-admin`, and `homelab-portal` Docker
   containers are stopped and removed before the direct systemd services start.

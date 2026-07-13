@@ -42,6 +42,7 @@ The admin app runs on `http://localhost:3002` and proxies `/api/backend/*` to th
 | `DATABASE_URL`                   | yes      | PostgreSQL connection string used by Prisma.                                       |
 | `PORT`                           | no       | Backend port, defaults to `3000`.                                                  |
 | `JWT_SECRET`                     | yes      | Secret used to sign JWT access tokens.                                             |
+| `MODEL_PROVIDER_ENCRYPTION_KEY`  | yes      | Base64-encoded 32-byte key for model provider API key encryption.                  |
 | `JWT_EXPIRES_IN`                 | no       | JWT lifetime, defaults to `1h`.                                                    |
 | `INITIAL_ADMIN_USERNAME`         | no       | Admin username to seed at startup when paired with password.                       |
 | `INITIAL_ADMIN_PASSWORD`         | no       | Admin password to seed/update at startup when paired with username.                |
@@ -164,8 +165,8 @@ The restart step writes the units under `$HOME/.config/systemd/user`, runs
 `systemctl --user daemon-reload`, stops existing services, truncates the three
 service logs, then enables and starts all three services.
 Required runtime env is stored in the target `.env` file: `DATABASE_URL`,
-`JWT_SECRET`, and optional `JWT_EXPIRES_IN`, `INITIAL_ADMIN_USERNAME`,
-`INITIAL_ADMIN_PASSWORD`, `ADMIN_BACKEND_URL`, and
+`JWT_SECRET`, `MODEL_PROVIDER_ENCRYPTION_KEY`, and optional `JWT_EXPIRES_IN`,
+`INITIAL_ADMIN_USERNAME`, `INITIAL_ADMIN_PASSWORD`, `ADMIN_BACKEND_URL`, and
 `NEXT_PUBLIC_ADMIN_API_BASE_URL`.
 
 Public URL contract:
