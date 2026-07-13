@@ -12,6 +12,12 @@ enum UserRole {
   ADMIN
 }
 
+enum AgentStatus {
+  initializing
+  ready
+  init_failed
+}
+
 model User {
   id           String   @id @default(cuid())
   username     String   @unique
@@ -33,4 +39,20 @@ model AppKey {
   lastUsedAt  DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+}
+
+model Agent {
+  id                  String      @id @default(cuid())
+  name                String
+  slug                String
+  status              AgentStatus @default(initializing)
+  workspaceName       String      @unique
+  workspacePath       String      @unique
+  modelProvider       String?
+  modelSecretRef      String?
+  soul                String      @default("")
+  initializationError String?
+  initializedAt       DateTime?
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
 }
