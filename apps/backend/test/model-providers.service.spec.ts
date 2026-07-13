@@ -37,7 +37,9 @@ describe("ModelProvidersService", () => {
   const service = () => new ModelProvidersService(prisma, credentials, connectionTester);
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
+    credentials.encrypt.mockImplementation((value: string) => `${encrypted}:${value.length}`);
+    credentials.decrypt.mockImplementation(() => "decrypted-key");
   });
 
   it("creates provider records with normalized unique names and encrypted credentials only", async () => {
@@ -105,6 +107,58 @@ describe("ModelProvidersService", () => {
     );
   });
 
+  it("replaces the stored credential when updating with a new API key", async () => {
+    modelProvider.findUnique.mockResolvedValue({ id: "provider_1", encryptedApiKey: "old" });
+    modelProvider.update.mockResolvedValue({
+      id: "provider_1",
+      name: "OpenAI",
+      nameKey: "openai",
+      type: "OPENAI_COMPATIBLE",
+      baseUrl: "https://api.example.com/v1",
+      encryptedApiKey: `${encrypted}:13`,
+      defaultModel: "gpt-4.1-mini",
+      isActive: true,
+      isDefault: false,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    const result = await service().update("provider_1", { apiKey: "sk-new-secret" });
+
+    expect(credentials.encrypt).toHaveBeenCalledWith("sk-new-secret");
+    expect(modelProvider.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ encryptedApiKey: `${encrypted}:13` })
+      })
+    );
+    expect(JSON.stringify(result)).not.toContain("sk-new-secret");
+    expect(JSON.stringify(result)).not.toContain("encryptedApiKey");
+  });
+
+  it("lists providers without exposing encryptedApiKey", async () => {
+    modelProvider.findMany.mockResolvedValue([
+      {
+        id: "provider_1",
+        name: "OpenAI",
+        nameKey: "openai",
+        type: "OPENAI_COMPATIBLE",
+        baseUrl: "https://api.example.com/v1",
+        encryptedApiKey: encrypted,
+        defaultModel: "gpt-4.1-mini",
+        isActive: true,
+        isDefault: true,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      }
+    ]);
+
+    const result = await service().list();
+
+    expect(result[0]).toMatchObject({ hasApiKey: true });
+    expect(Object.prototype.hasOwnProperty.call(result[0], "encryptedApiKey")).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(encrypted);
+  });
+
   it("switches the default provider transactionally", async () => {
     const tx = {
       modelProvider: {
@@ -136,6 +190,21 @@ describe("ModelProvidersService", () => {
       select: expect.any(Object)
     });
     expect(result.isDefault).toBe(true);
+  });
+
+  it("rejects setting a disabled provider as default", async () => {
+    const tx = {
+      modelProvider: {
+        findUnique: jest.fn().mockResolvedValue({ id: "provider_2", isActive: false }),
+        updateMany: jest.fn(),
+        update: jest.fn()
+      }
+    };
+    transaction.mockImplementation((callback: (client: MockTransaction) => Promise<unknown>) => callback(tx));
+
+    await expect(service().setDefault("provider_2")).rejects.toThrow(BadRequestException);
+    expect(tx.modelProvider.updateMany).not.toHaveBeenCalled();
+    expect(tx.modelProvider.update).not.toHaveBeenCalled();
   });
 
   it("rejects disabling the current default provider", async () => {
@@ -170,6 +239,13 @@ describe("ModelProvidersService", () => {
     });
 
     await expect(service().resolveProviderForAgent("provider_1")).rejects.toThrow(BadRequestException);
+  });
+
+  it("does not silently fall back when an agent provider is missing", async () => {
+    modelProvider.findUnique.mockResolvedValue(null);
+
+    await expect(service().resolveProviderForAgent("missing_provider")).rejects.toThrow(NotFoundException);
+    expect(modelProvider.findFirst).not.toHaveBeenCalled();
   });
 
   it("sanitizes failed connection test summaries", async () => {
