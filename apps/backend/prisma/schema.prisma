@@ -18,6 +18,10 @@ enum AgentStatus {
   init_failed
 }
 
+enum ModelProviderType {
+  OPENAI_COMPATIBLE
+}
+
 model User {
   id           String   @id @default(cuid())
   username     String   @unique
@@ -29,16 +33,16 @@ model User {
 }
 
 model AppKey {
-  id          String    @id @default(cuid())
-  name        String
-  keyHash     String    @unique
-  agentName   String?
-  scopes      String[]  @default([])
-  isActive    Boolean   @default(true)
-  expiresAt   DateTime?
-  lastUsedAt  DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id         String    @id @default(cuid())
+  name       String
+  keyHash    String    @unique
+  agentName  String?
+  scopes     String[]  @default([])
+  isActive   Boolean   @default(true)
+  expiresAt  DateTime?
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 }
 
 model Agent {
@@ -55,4 +59,18 @@ model Agent {
   initializedAt       DateTime?
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
+}
+
+model ModelProvider {
+  id              String            @id @default(cuid())
+  name            String
+  nameKey         String            @unique
+  type            ModelProviderType @default(OPENAI_COMPATIBLE)
+  baseUrl         String
+  encryptedApiKey String
+  defaultModel    String
+  isActive        Boolean           @default(true)
+  isDefault       Boolean           @default(false)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 }

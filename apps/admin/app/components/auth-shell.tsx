@@ -9,6 +9,7 @@ const nav = [
   { href: "/agents", label: "Agent 管理" },
   { href: "/users", label: "用户管理" },
   { href: "/app-keys", label: "AppKey 管理" },
+  { href: "/model-providers", label: "模型提供方" },
 ];
 
 export function AuthShell({ children }: { children: React.ReactNode }) {

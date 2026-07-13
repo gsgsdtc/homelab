@@ -250,14 +250,15 @@ prepare_config() {
   fi
 
   # Basic validation
-  local db_url jwt_secret
+  local db_url jwt_secret provider_key
   db_url="$(grep -E "^DATABASE_URL=" "${ENV_FILE}" | tail -n1 | cut -d= -f2- || true)"
   jwt_secret="$(grep -E "^JWT_SECRET=" "${ENV_FILE}" | tail -n1 | cut -d= -f2- || true)"
-  if [ -z "${db_url}" ] || [ -z "${jwt_secret}" ]; then
-    die "DATABASE_URL and JWT_SECRET must be set in ${ENV_FILE}"
+  provider_key="$(grep -E "^MODEL_PROVIDER_ENCRYPTION_KEY=" "${ENV_FILE}" | tail -n1 | cut -d= -f2- || true)"
+  if [ -z "${db_url}" ] || [ -z "${jwt_secret}" ] || [ -z "${provider_key}" ]; then
+    die "DATABASE_URL, JWT_SECRET, and MODEL_PROVIDER_ENCRYPTION_KEY must be set in ${ENV_FILE}"
   fi
-  if [[ "${db_url}" == *change-me* ]] || [[ "${jwt_secret}" == *change-me* ]]; then
-    die "Replace placeholder DATABASE_URL and JWT_SECRET values in ${ENV_FILE}"
+  if [[ "${db_url}" == *change-me* ]] || [[ "${jwt_secret}" == *change-me* ]] || [[ "${provider_key}" == *change-me* ]]; then
+    die "Replace placeholder DATABASE_URL, JWT_SECRET, and MODEL_PROVIDER_ENCRYPTION_KEY values in ${ENV_FILE}"
   fi
   echo "Runtime env file validated: ${ENV_FILE}"
 }
