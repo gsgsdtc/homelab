@@ -12,6 +12,10 @@ enum UserRole {
   ADMIN
 }
 
+enum ModelProviderType {
+  OPENAI_COMPATIBLE
+}
+
 model User {
   id           String   @id @default(cuid())
   username     String   @unique
@@ -33,4 +37,18 @@ model AppKey {
   lastUsedAt  DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+}
+
+model ModelProvider {
+  id              String            @id @default(cuid())
+  name            String
+  nameKey         String            @unique
+  type            ModelProviderType @default(OPENAI_COMPATIBLE)
+  baseUrl         String
+  encryptedApiKey String
+  defaultModel    String
+  isActive        Boolean           @default(true)
+  isDefault       Boolean           @default(false)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 }

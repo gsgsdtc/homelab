@@ -4,6 +4,7 @@ import { AppKeysModule } from "./modules/app-keys/app-keys.module";
 import { AuthModule } from "./modules/auth/auth.module";
 import { validateEnvironment } from "./config/env.validation";
 import { HealthModule } from "./modules/health/health.module";
+import { ModelProvidersModule } from "./modules/model-providers/model-providers.module";
 import { PrismaModule } from "./modules/prisma/prisma.module";
 import { UsersModule } from "./modules/users/users.module";
 
@@ -17,7 +18,8 @@ import { UsersModule } from "./modules/users/users.module";
     HealthModule,
     AuthModule,
     UsersModule,
-    AppKeysModule
+    AppKeysModule,
+    ModelProvidersModule
   ]
 })
 export class AppModule {}
