@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { AppKeysModule } from "./modules/app-keys/app-keys.module";
+import { AgentSkillsModule } from "./modules/agent-skills/agent-skills.module";
 import { AgentsModule } from "./modules/agents/agents.module";
 import { AuthModule } from "./modules/auth/auth.module";
 import { validateEnvironment } from "./config/env.validation";
@@ -21,6 +22,7 @@ import { UsersModule } from "./modules/users/users.module";
     UsersModule,
     AppKeysModule,
     AgentsModule,
+    AgentSkillsModule,
     ModelProvidersModule,
   ],
 })
