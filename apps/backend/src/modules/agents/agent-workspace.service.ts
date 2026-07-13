@@ -54,6 +54,7 @@ export class AgentWorkspaceService {
     currentAgent?: Pick<Agent, "workspacePath">,
     options: InitializeWorkspaceOptions = {}
   ) {
+    await this.assertWorkspaceRootChainSafe();
     await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
 
     try {
@@ -82,11 +83,12 @@ export class AgentWorkspaceService {
   async initializeWorkspace(agent: InitializeWorkspaceInput, options: InitializeWorkspaceOptions = {}): Promise<void> {
     const descriptor = this.descriptorFromAgent(agent);
     await this.ensurePathAvailable(descriptor, { workspacePath: agent.workspacePath }, options);
+    await this.assertWorkspaceRootChainSafe();
     await mkdir(descriptor.workspacePath, { recursive: true });
     await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
     await mkdir(join(descriptor.workspacePath, "skills"), { recursive: true });
     await mkdir(join(descriptor.workspacePath, "workflows"), { recursive: true });
-    await this.writeGeneratedFiles(agent, descriptor);
+    await this.writeGeneratedFiles(agent, descriptor, options);
     await this.ensureAgentsGitignore(descriptor.rootPath);
   }
 
@@ -106,7 +108,11 @@ export class AgentWorkspaceService {
     };
   }
 
-  private async writeGeneratedFiles(agent: InitializeWorkspaceInput, descriptor: AgentWorkspaceDescriptor) {
+  private async writeGeneratedFiles(
+    agent: InitializeWorkspaceInput,
+    descriptor: AgentWorkspaceDescriptor,
+    options: InitializeWorkspaceOptions
+  ) {
     const agentYaml = [
       `id: ${agent.id}`,
       `name: ${this.quoteYaml(agent.name)}`,
@@ -118,12 +124,23 @@ export class AgentWorkspaceService {
       ""
     ].join("\n");
 
-    await writeFile(join(descriptor.workspacePath, "agent.yaml"), agentYaml, "utf8");
-    await writeFile(join(descriptor.workspacePath, "soul.md"), agent.soul || `# ${agent.name}\n`, "utf8");
-    await writeFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "skills: []\n", "utf8");
-    await writeFile(join(descriptor.workspacePath, "workflows", "workflow.yaml"), "workflows: []\n", "utf8");
-    await writeFile(join(descriptor.workspacePath, "secrets.example.env"), this.buildSecretsExample(agent), "utf8");
-    await writeFile(join(descriptor.workspacePath, "README.md"), this.buildReadme(agent, descriptor), "utf8");
+    await this.writeGeneratedFile(join(descriptor.workspacePath, "agent.yaml"), agentYaml, options);
+    await this.writeGeneratedFile(join(descriptor.workspacePath, "soul.md"), agent.soul || `# ${agent.name}\n`, options);
+    await this.writeGeneratedFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "skills: []\n", options);
+    await this.writeGeneratedFile(
+      join(descriptor.workspacePath, "workflows", "workflow.yaml"),
+      "workflows: []\n",
+      options
+    );
+    await this.writeGeneratedFile(join(descriptor.workspacePath, "secrets.example.env"), this.buildSecretsExample(agent), options);
+    await this.writeGeneratedFile(join(descriptor.workspacePath, "README.md"), this.buildReadme(agent, descriptor), options);
+  }
+
+  private async writeGeneratedFile(path: string, content: string, options: InitializeWorkspaceOptions) {
+    if (options.allowExistingWorkspace && (await this.pathExists(path))) {
+      return;
+    }
+    await writeFile(path, content, "utf8");
   }
 
   private async ensureAgentsGitignore(rootPath: string) {
@@ -187,8 +204,8 @@ export class AgentWorkspaceService {
   }
 
   private async assertNoSymlinkEscape(rootPath: string, targetPath: string): Promise<void> {
-    const realRoot = await this.realpathIfExists(rootPath);
-    if (!realRoot) {
+    const realRepoRoot = await this.realpathIfExists(this.getRepoRoot());
+    if (!realRepoRoot) {
       return;
     }
 
@@ -198,7 +215,33 @@ export class AgentWorkspaceService {
     }
 
     const realTarget = await realpath(existingTarget);
-    this.assertInsideOrEqual(realRoot, realTarget);
+    this.assertInsideOrEqual(realRepoRoot, realTarget);
+    if (this.isInsideOrEqual(rootPath, existingTarget)) {
+      const realRoot = await this.realpathIfExists(rootPath);
+      if (realRoot) {
+        this.assertInsideOrEqual(realRoot, realTarget);
+      }
+    }
+  }
+
+  private async assertWorkspaceRootChainSafe(): Promise<void> {
+    const repoRoot = this.getRepoRoot();
+    const realRepoRoot = await this.realpathIfExists(repoRoot);
+    if (!realRepoRoot) {
+      return;
+    }
+
+    for (const path of [join(repoRoot, ".homelab"), join(repoRoot, ".homelab", "agents")]) {
+      const stat = await this.lstatIfExists(path);
+      if (!stat) {
+        continue;
+      }
+      if (stat.isSymbolicLink()) {
+        throw new Error("workspace root must not contain symbolic links");
+      }
+      const realPath = await realpath(path);
+      this.assertInsideOrEqual(realRepoRoot, realPath);
+    }
   }
 
   private async nearestExistingPath(targetPath: string): Promise<string | null> {
@@ -225,12 +268,40 @@ export class AgentWorkspaceService {
     }
   }
 
+  private isInsideOrEqual(rootPath: string, targetPath: string): boolean {
+    const rel = relative(rootPath, targetPath);
+    return rel === "" || (!rel.startsWith("..") && !rel.includes(`..${sep}`));
+  }
+
   private async realpathIfExists(path: string): Promise<string | null> {
     try {
       return await realpath(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return null;
+      }
+      throw error;
+    }
+  }
+
+  private async lstatIfExists(path: string) {
+    try {
+      return await lstat(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  private async pathExists(path: string): Promise<boolean> {
+    try {
+      await access(path, constants.F_OK);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return false;
       }
       throw error;
     }

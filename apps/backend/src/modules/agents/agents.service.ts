@@ -41,7 +41,7 @@ export class AgentsService {
   }
 
   async create(dto: CreateAgentDto): Promise<PublicAgent> {
-    this.assertNoSecretLeak(dto.modelSecretRef);
+    this.assertNoSecretLeak(dto);
     const slug = this.buildSlug(dto.slug ?? dto.name);
     const id = randomUUID();
     const descriptor = this.workspaces.buildDescriptor(slug, id);
@@ -64,7 +64,7 @@ export class AgentsService {
   }
 
   async update(id: string, dto: UpdateAgentDto): Promise<PublicAgent> {
-    this.assertNoSecretLeak(dto.modelSecretRef);
+    this.assertNoSecretLeak(dto);
     await this.findAgent(id);
     const agent = await this.prisma.agent.update({
       where: { id },
@@ -136,13 +136,32 @@ export class AgentsService {
     return slug;
   }
 
-  private assertNoSecretLeak(secretRef?: string): void {
-    if (!secretRef) {
-      return;
+  private assertNoSecretLeak(dto: CreateAgentDto | UpdateAgentDto): void {
+    const fields: Array<[string, string | undefined]> = [
+      ["name", dto.name],
+      ["slug", "slug" in dto ? dto.slug : undefined],
+      ["modelProvider", dto.modelProvider],
+      ["modelSecretRef", dto.modelSecretRef],
+      ["soul", dto.soul]
+    ];
+
+    for (const [field, value] of fields) {
+      if (value && this.looksLikeSecret(value)) {
+        throw new BadRequestException(`${field} must not contain real secret values`);
+      }
     }
-    if (/^(sk-|xox[baprs]-|gh[pousr]_|-----BEGIN |eyJ)/.test(secretRef)) {
-      throw new BadRequestException("only secret reference names are allowed");
-    }
+  }
+
+  private looksLikeSecret(value: string): boolean {
+    return [
+      /sk-[A-Za-z0-9_-]{8,}/,
+      /xox[baprs]-[A-Za-z0-9-]{8,}/,
+      /gh[pousr]_[A-Za-z0-9_]{8,}/,
+      /AKIA[0-9A-Z]{16}/,
+      /AIza[0-9A-Za-z_-]{20,}/,
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+      /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/
+    ].some((pattern) => pattern.test(value));
   }
 
   private toPublic(agent: Agent): PublicAgent {

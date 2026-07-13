@@ -129,6 +129,34 @@ describe("AgentsService", () => {
     expect(workspaces.initializeWorkspace).not.toHaveBeenCalled();
   });
 
+  it("rejects real secrets in every field that can be written to workspace files or paths", async () => {
+    const service = new AgentsService(prisma, workspaces);
+    const cases = [
+      { name: "sk-secret1234567890" },
+      { name: "Ops Agent", slug: "sk-secret1234567890" },
+      { name: "Ops Agent", modelProvider: "ghp_secret1234567890" },
+      { name: "Ops Agent", soul: "Use token xoxb-secret1234567890" },
+      { name: "Ops Agent", modelSecretRef: "-----BEGIN PRIVATE KEY-----abc" }
+    ];
+
+    for (const dto of cases) {
+      await expect(service.create(dto)).rejects.toThrow(BadRequestException);
+    }
+    expect(prisma.agent.create).not.toHaveBeenCalled();
+    expect(workspaces.initializeWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("rejects real secrets in update fields before writing workspace files", async () => {
+    const service = new AgentsService(prisma, workspaces);
+
+    await expect(service.update("agent-123", { soul: "JWT eyJsecretpayload.eyJsecretpayload" })).rejects.toThrow(
+      BadRequestException
+    );
+
+    expect(prisma.agent.update).not.toHaveBeenCalled();
+    expect(workspaces.initializeWorkspace).not.toHaveBeenCalled();
+  });
+
   it("returns fixed detail API fields for initializing, ready, and init_failed statuses", async () => {
     const service = new AgentsService(prisma, workspaces);
     const statuses = [
