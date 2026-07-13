@@ -79,6 +79,24 @@ describe("AgentsService", () => {
     });
     expect(result.status).toBe(AgentStatus.ready);
     expect(result.gitStatus).toBe("available");
+    expect(result).toEqual({
+      id: expect.any(String),
+      name: "Ops Agent",
+      status: AgentStatus.ready,
+      workspacePath: expect.stringMatching(/^\.homelab\/agents\/ops-agent--[a-z0-9]{8}$/),
+      workspaceName: expect.stringMatching(/^ops-agent--[a-z0-9]{8}$/),
+      initError: null,
+      gitStatus: "available"
+    });
+    expect(Object.keys(result).sort()).toEqual([
+      "gitStatus",
+      "id",
+      "initError",
+      "name",
+      "status",
+      "workspaceName",
+      "workspacePath"
+    ]);
   });
 
   it("marks the Agent init_failed when workspace initialization fails", async () => {
@@ -88,7 +106,10 @@ describe("AgentsService", () => {
     const result = await service.create({ name: "Ops Agent" });
 
     expect(result.status).toBe(AgentStatus.init_failed);
-    expect(result.initializationError).toBe("soul.md write failed");
+    expect(result.initError).toEqual({
+      code: "WORKSPACE_INITIALIZATION_FAILED",
+      message: "soul.md write failed"
+    });
     expect(prisma.agent.update).toHaveBeenLastCalledWith({
       where: { id: expect.any(String) },
       data: {
@@ -106,6 +127,86 @@ describe("AgentsService", () => {
     );
     expect(prisma.agent.create).not.toHaveBeenCalled();
     expect(workspaces.initializeWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("returns fixed detail API fields for initializing, ready, and init_failed statuses", async () => {
+    const service = new AgentsService(prisma, workspaces);
+    const statuses = [
+      { status: AgentStatus.initializing, expectedInitError: null },
+      { status: AgentStatus.ready, expectedInitError: null },
+      {
+        status: AgentStatus.init_failed,
+        expectedInitError: {
+          code: "WORKSPACE_INITIALIZATION_FAILED",
+          message: "workspace path already exists"
+        }
+      }
+    ];
+
+    for (const item of statuses) {
+      prisma.agent.findUnique.mockResolvedValueOnce(
+        agentFrom({
+          id: `agent-${item.status}`,
+          status: item.status,
+          initializationError:
+            item.status === AgentStatus.init_failed ? "workspace path already exists" : "ignored previous error"
+        })
+      );
+
+      const result = await service.get(`agent-${item.status}`);
+
+      expect(result).toEqual({
+        id: `agent-${item.status}`,
+        name: "Ops Agent",
+        status: item.status,
+        workspacePath: ".homelab/agents/ops-agent--agent123",
+        workspaceName: "ops-agent--agent123",
+        initError: item.expectedInitError,
+        gitStatus: "available"
+      });
+      expect(Object.keys(result).sort()).toEqual([
+        "gitStatus",
+        "id",
+        "initError",
+        "name",
+        "status",
+        "workspaceName",
+        "workspacePath"
+      ]);
+    }
+  });
+
+  it("exposes status as the run-entry gate for UI assertions", async () => {
+    prisma.agent.findUnique.mockResolvedValueOnce(
+      agentFrom({
+        id: "agent-initializing",
+        status: AgentStatus.initializing
+      })
+    );
+    prisma.agent.findUnique.mockResolvedValueOnce(
+      agentFrom({
+        id: "agent-ready",
+        status: AgentStatus.ready
+      })
+    );
+    prisma.agent.findUnique.mockResolvedValueOnce(
+      agentFrom({
+        id: "agent-failed",
+        status: AgentStatus.init_failed,
+        initializationError: "soul.md write failed"
+      })
+    );
+    const service = new AgentsService(prisma, workspaces);
+
+    await expect(service.get("agent-initializing")).resolves.toMatchObject({ status: AgentStatus.initializing });
+    await expect(service.get("agent-ready")).resolves.toMatchObject({ status: AgentStatus.ready });
+    await expect(service.get("agent-failed")).resolves.toMatchObject({
+      status: AgentStatus.init_failed,
+      initError: {
+        code: "WORKSPACE_INITIALIZATION_FAILED",
+        message: "soul.md write failed"
+      }
+    });
   });
 
   it("retries initialization against the same Agent workspace", async () => {

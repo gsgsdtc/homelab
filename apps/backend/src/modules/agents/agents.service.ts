@@ -6,7 +6,20 @@ import { AgentWorkspaceService } from "./agent-workspace.service";
 import { CreateAgentDto } from "./dto/create-agent.dto";
 import { UpdateAgentDto } from "./dto/update-agent.dto";
 
-export type PublicAgent = Agent & { gitStatus: "available" | "unavailable" };
+export interface AgentInitError {
+  code: "WORKSPACE_INITIALIZATION_FAILED";
+  message: string;
+}
+
+export interface PublicAgent {
+  id: string;
+  name: string;
+  status: AgentStatus;
+  workspacePath: string;
+  workspaceName: string;
+  initError: AgentInitError | null;
+  gitStatus: "available" | "unavailable";
+}
 
 @Injectable()
 export class AgentsService {
@@ -134,8 +147,23 @@ export class AgentsService {
 
   private toPublic(agent: Agent): PublicAgent {
     return {
-      ...agent,
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      workspacePath: agent.workspacePath,
+      workspaceName: agent.workspaceName,
+      initError: this.toInitError(agent),
       gitStatus: this.workspaces.getGitStatus()
+    };
+  }
+
+  private toInitError(agent: Agent): AgentInitError | null {
+    if (agent.status !== AgentStatus.init_failed) {
+      return null;
+    }
+    return {
+      code: "WORKSPACE_INITIALIZATION_FAILED",
+      message: agent.initializationError || "workspace initialization failed"
     };
   }
 
