@@ -194,6 +194,122 @@ describe("AdminApiClient", () => {
     );
   });
 
+  it("sends model provider list and mutations to the backend without API key in URLs", async () => {
+    store.setToken("jwt-token");
+    fetchMock
+      .mockResolvedValueOnce(okJson([{ id: "p1", name: "OpenAI", hasApiKey: true }]))
+      .mockResolvedValueOnce(okJson({ id: "p1", name: "OpenAI", hasApiKey: true }))
+      .mockResolvedValueOnce(okJson({ id: "p1", name: "OpenAI US", hasApiKey: true }))
+      .mockResolvedValueOnce(okJson({ id: "p1", name: "OpenAI US", hasApiKey: true }))
+      .mockResolvedValueOnce(okJson({ id: "p1", name: "OpenAI US", hasApiKey: true }))
+      .mockResolvedValueOnce(okJson({ id: "p1", name: "OpenAI US", hasApiKey: true }));
+    const client = new AdminApiClient({ baseUrl: "/api/backend", tokenStore: store, fetcher: fetchMock });
+
+    await client.listModelProviders();
+    await client.createModelProvider({
+      name: "OpenAI",
+      type: "OPENAI_COMPATIBLE",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-secret",
+      defaultModel: "gpt-4.1-mini",
+      isActive: true
+    });
+    await client.updateModelProvider("p1", {
+      name: "OpenAI US",
+      baseUrl: "https://api.openai.com/v1",
+      defaultModel: "gpt-4.1-mini"
+    });
+    await client.setDefaultModelProvider("p1");
+    await client.enableModelProvider("p1");
+    await client.disableModelProvider("p1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/backend/model-providers",
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer jwt-token" }) })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/backend/model-providers",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          name: "OpenAI",
+          type: "OPENAI_COMPATIBLE",
+          baseUrl: "https://api.openai.com/v1",
+          apiKey: "sk-secret",
+          defaultModel: "gpt-4.1-mini",
+          isActive: true
+        })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/backend/model-providers/p1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({
+          name: "OpenAI US",
+          baseUrl: "https://api.openai.com/v1",
+          defaultModel: "gpt-4.1-mini"
+        })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/api/backend/model-providers/p1/default",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      "/api/backend/model-providers/p1/enable",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
+      "/api/backend/model-providers/p1/disable",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchMock.mock.calls.map((call) => String(call[0])).join(" ")).not.toContain("sk-secret");
+  });
+
+  it("tests model provider connections with form values or a saved provider id", async () => {
+    store.setToken("jwt-token");
+    fetchMock.mockResolvedValueOnce(okJson({ ok: true }));
+    fetchMock.mockResolvedValueOnce(okJson({ ok: false, error: "connection test timed out" }));
+    const client = new AdminApiClient({ baseUrl: "/api/backend", tokenStore: store, fetcher: fetchMock });
+
+    await client.testModelProviderConnection({
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-secret",
+      defaultModel: "gpt-4.1-mini"
+    });
+    const result = await client.testModelProviderConnection({ providerId: "p1" });
+
+    expect(result).toEqual({ ok: false, error: "connection test timed out" });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/backend/model-providers/test-connection",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          baseUrl: "https://api.openai.com/v1",
+          apiKey: "sk-secret",
+          defaultModel: "gpt-4.1-mini"
+        })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/backend/model-providers/test-connection",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ providerId: "p1" })
+      })
+    );
+    expect(fetchMock.mock.calls.map((call) => String(call[0])).join(" ")).not.toContain("sk-secret");
+  });
+
   it("checks AppKey access with the X-App-Key header instead of URL params", async () => {
     fetchMock.mockResolvedValueOnce(okJson({ name: "mobile-agent", scopes: ["pages:portal"] }));
     const client = new AdminApiClient({ baseUrl: "/api/backend", tokenStore: store, fetcher: fetchMock });
