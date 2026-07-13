@@ -185,6 +185,18 @@ label {
   padding: 14px 16px;
 }
 
+.empty-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.empty-action p {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
 .notice.error,
 .error-text {
   color: var(--danger);
@@ -278,6 +290,12 @@ button.danger,
   color: var(--off);
 }
 
+.masked-key {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -296,6 +314,10 @@ button.danger,
   padding: 22px;
 }
 
+.provider-modal {
+  width: min(560px, 100%);
+}
+
 .check-row {
   display: flex;
   align-items: center;
@@ -311,6 +333,18 @@ button.danger,
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.connection-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.connection-result {
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 760px) {
@@ -348,6 +382,13 @@ button.danger,
 
   .toolbar input {
     max-width: none;
+  }
+
+  .empty-action,
+  .connection-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
   .table-wrap {

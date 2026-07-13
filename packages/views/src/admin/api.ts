@@ -28,6 +28,46 @@ export interface AppIdentity {
   scopes: string[];
 }
 
+export type ModelProviderType = "OPENAI_COMPATIBLE";
+
+export interface ModelProvider {
+  id: string;
+  name: string;
+  nameKey: string;
+  type: ModelProviderType;
+  baseUrl: string;
+  defaultModel: string;
+  isActive: boolean;
+  isDefault: boolean;
+  hasApiKey: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ModelProviderPayload {
+  name: string;
+  type?: ModelProviderType;
+  baseUrl: string;
+  apiKey?: string;
+  defaultModel: string;
+  isActive?: boolean;
+}
+
+export type ModelProviderConnectionPayload =
+  | {
+      providerId: string;
+    }
+  | {
+      baseUrl: string;
+      apiKey: string;
+      defaultModel: string;
+    };
+
+export interface ModelProviderConnectionResult {
+  ok: boolean;
+  error?: string;
+}
+
 export interface LoginSession {
   accessToken: string;
   tokenType: "Bearer";
@@ -164,6 +204,43 @@ export class AdminApiClient {
 
   revokeAppKey(id: string) {
     return this.request<{ revoked: true }>(`/app-keys/${id}`, { method: "DELETE" });
+  }
+
+  listModelProviders() {
+    return this.request<ModelProvider[]>("/model-providers");
+  }
+
+  createModelProvider(payload: ModelProviderPayload & { apiKey: string }) {
+    return this.request<ModelProvider>("/model-providers", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  }
+
+  updateModelProvider(id: string, payload: Partial<ModelProviderPayload>) {
+    return this.request<ModelProvider>(`/model-providers/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    });
+  }
+
+  setDefaultModelProvider(id: string) {
+    return this.request<ModelProvider>(`/model-providers/${id}/default`, { method: "POST" });
+  }
+
+  enableModelProvider(id: string) {
+    return this.request<ModelProvider>(`/model-providers/${id}/enable`, { method: "POST" });
+  }
+
+  disableModelProvider(id: string) {
+    return this.request<ModelProvider>(`/model-providers/${id}/disable`, { method: "POST" });
+  }
+
+  testModelProviderConnection(payload: ModelProviderConnectionPayload) {
+    return this.request<ModelProviderConnectionResult>("/model-providers/test-connection", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
   }
 
   getAppIdentity(appKey: string) {
