@@ -6,15 +6,18 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 
 const nav = [
+  { href: "/agents", label: "Agent 管理" },
   { href: "/users", label: "用户管理" },
   { href: "/app-keys", label: "AppKey 管理" },
-  { href: "/model-providers", label: "模型提供方" }
+  { href: "/model-providers", label: "模型提供方" },
 ];
 
 export function AuthShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [status, setStatus] = useState<"checking" | "ready" | "denied">("checking");
+  const [status, setStatus] = useState<"checking" | "ready" | "denied">(
+    "checking",
+  );
 
   useEffect(() => {
     if (!api.getToken()) {
@@ -49,7 +52,11 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
         </div>
         <nav>
           {nav.map((item) => (
-            <Link key={item.href} className={pathname === item.href ? "active" : ""} href={item.href}>
+            <Link
+              key={item.href}
+              className={pathname === item.href ? "active" : ""}
+              href={item.href}
+            >
               {item.label}
             </Link>
           ))}

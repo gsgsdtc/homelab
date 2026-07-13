@@ -28,7 +28,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -53,7 +54,8 @@ button:disabled {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-height: 38px;
   border: 1px solid var(--line);
@@ -61,6 +63,12 @@ select {
   background: white;
   color: var(--text);
   padding: 0 10px;
+}
+
+textarea {
+  min-height: 120px;
+  padding: 10px;
+  resize: vertical;
 }
 
 label {
@@ -215,6 +223,67 @@ label {
   padding: 10px;
 }
 
+.agents-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+  gap: 18px;
+  align-items: start;
+}
+
+.detail-panel {
+  display: grid;
+  gap: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 18px;
+}
+
+.detail-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detail-title h3 {
+  margin: 0;
+}
+
+.detail-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+}
+
+.detail-list div {
+  display: grid;
+  gap: 4px;
+}
+
+.detail-list dt {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.detail-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.inline-code {
+  border-radius: 6px;
+  background: #f2f4f7;
+  color: var(--text);
+  padding: 3px 6px;
+}
+
 .table-wrap {
   overflow-x: auto;
   border: 1px solid var(--line);
@@ -290,6 +359,11 @@ button.danger,
   color: var(--off);
 }
 
+.status.danger-status {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
 .masked-key {
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -314,6 +388,7 @@ button.danger,
   padding: 22px;
 }
 
+.wide-modal,
 .provider-modal {
   width: min(560px, 100%);
 }
@@ -395,6 +470,10 @@ button.danger,
     overflow-x: visible;
     border: 0;
     background: transparent;
+  }
+
+  .agents-layout {
+    grid-template-columns: 1fr;
   }
 
   table,
