@@ -1,5 +1,5 @@
 import { constants, existsSync } from "fs";
-import { access, lstat, mkdir, realpath, writeFile } from "fs/promises";
+import { access, lstat, mkdir, readFile, realpath, writeFile } from "fs/promises";
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { join, relative, resolve, sep } from "path";
@@ -25,6 +25,8 @@ export interface InitializeWorkspaceInput {
 
 export interface InitializeWorkspaceOptions {
   allowExistingWorkspace?: boolean;
+  syncExistingGenerated?: boolean;
+  previousAgent?: InitializeWorkspaceInput;
 }
 
 const SECRET_IGNORE_RULES = ["**/.env", "**/.env.*", "**/*.secret", "**/secrets.local.*"];
@@ -88,8 +90,16 @@ export class AgentWorkspaceService {
     await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
     await mkdir(join(descriptor.workspacePath, "skills"), { recursive: true });
     await mkdir(join(descriptor.workspacePath, "workflows"), { recursive: true });
-    await this.writeGeneratedFiles(agent, descriptor, options);
+    await this.writeGeneratedFiles(agent, descriptor, options, options.previousAgent);
     await this.ensureAgentsGitignore(descriptor.rootPath);
+  }
+
+  async syncWorkspace(agent: InitializeWorkspaceInput, previousAgent: InitializeWorkspaceInput): Promise<void> {
+    await this.initializeWorkspace(agent, {
+      allowExistingWorkspace: true,
+      syncExistingGenerated: true,
+      previousAgent
+    });
   }
 
   getGitStatus(): "available" | "unavailable" {
@@ -111,9 +121,41 @@ export class AgentWorkspaceService {
   private async writeGeneratedFiles(
     agent: InitializeWorkspaceInput,
     descriptor: AgentWorkspaceDescriptor,
-    options: InitializeWorkspaceOptions
+    options: InitializeWorkspaceOptions,
+    previousAgent?: InitializeWorkspaceInput
   ) {
-    const agentYaml = [
+    const previousDescriptor = previousAgent ? this.descriptorFromAgent(previousAgent) : undefined;
+    const generatedFiles = this.buildGeneratedFiles(agent, descriptor);
+    const previousGeneratedFiles =
+      previousAgent && previousDescriptor ? this.buildGeneratedFiles(previousAgent, previousDescriptor) : new Map();
+
+    for (const [relativePath, content] of generatedFiles) {
+      await this.writeGeneratedFile(
+        join(descriptor.workspacePath, relativePath),
+        content,
+        options,
+        previousGeneratedFiles.get(relativePath),
+        relativePath
+      );
+    }
+  }
+
+  private buildGeneratedFiles(
+    agent: InitializeWorkspaceInput,
+    descriptor: AgentWorkspaceDescriptor
+  ): Map<string, string> {
+    const files = new Map<string, string>();
+    files.set("agent.yaml", this.buildAgentYaml(agent, descriptor));
+    files.set("soul.md", agent.soul || `# ${agent.name}\n`);
+    files.set("skills/skills.yaml", "skills: []\n");
+    files.set("workflows/workflow.yaml", "workflows: []\n");
+    files.set("secrets.example.env", this.buildSecretsExample(agent));
+    files.set("README.md", this.buildReadme(agent, descriptor));
+    return files;
+  }
+
+  private buildAgentYaml(agent: InitializeWorkspaceInput, descriptor: AgentWorkspaceDescriptor): string {
+    return [
       `id: ${agent.id}`,
       `name: ${this.quoteYaml(agent.name)}`,
       `slug: ${agent.slug}`,
@@ -123,24 +165,38 @@ export class AgentWorkspaceService {
       `  secretRef: ${agent.modelSecretRef ?? "null"}`,
       ""
     ].join("\n");
-
-    await this.writeGeneratedFile(join(descriptor.workspacePath, "agent.yaml"), agentYaml, options);
-    await this.writeGeneratedFile(join(descriptor.workspacePath, "soul.md"), agent.soul || `# ${agent.name}\n`, options);
-    await this.writeGeneratedFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "skills: []\n", options);
-    await this.writeGeneratedFile(
-      join(descriptor.workspacePath, "workflows", "workflow.yaml"),
-      "workflows: []\n",
-      options
-    );
-    await this.writeGeneratedFile(join(descriptor.workspacePath, "secrets.example.env"), this.buildSecretsExample(agent), options);
-    await this.writeGeneratedFile(join(descriptor.workspacePath, "README.md"), this.buildReadme(agent, descriptor), options);
   }
 
-  private async writeGeneratedFile(path: string, content: string, options: InitializeWorkspaceOptions) {
-    if (options.allowExistingWorkspace && (await this.pathExists(path))) {
+  private async writeGeneratedFile(
+    path: string,
+    content: string,
+    options: InitializeWorkspaceOptions,
+    previousContent?: string,
+    relativePath = path
+  ) {
+    if (!(await this.pathExists(path))) {
+      await writeFile(path, content, "utf8");
       return;
     }
-    await writeFile(path, content, "utf8");
+
+    if (!options.allowExistingWorkspace) {
+      await writeFile(path, content, "utf8");
+      return;
+    }
+
+    if (!options.syncExistingGenerated) {
+      return;
+    }
+
+    const existingContent = await readFile(path, "utf8");
+    if (existingContent === content) {
+      return;
+    }
+    if (previousContent !== undefined && existingContent === previousContent) {
+      await writeFile(path, content, "utf8");
+      return;
+    }
+    throw new Error(`workspace file has user edits: ${relativePath}`);
   }
 
   private async ensureAgentsGitignore(rootPath: string) {

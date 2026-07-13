@@ -209,4 +209,63 @@ describe("AgentWorkspaceService", () => {
       "workflows: []\n"
     );
   });
+
+  it("syncs updated generated files when they have not been edited by a user", async () => {
+    const descriptor = service.buildDescriptor("ops-agent", "12345678-abcd");
+    const previousAgent = {
+      id: "12345678-abcd",
+      name: "Ops Agent",
+      slug: "ops-agent",
+      workspaceName: descriptor.workspaceName,
+      workspacePath: descriptor.relativeWorkspacePath,
+      modelProvider: "openai",
+      modelSecretRef: "OPENAI_API_KEY",
+      soul: "Initial soul."
+    };
+    await service.initializeWorkspace(previousAgent, { allowExistingWorkspace: false });
+
+    await service.syncWorkspace(
+      {
+        ...previousAgent,
+        name: "Ops Agent Updated",
+        modelProvider: "anthropic",
+        modelSecretRef: "ANTHROPIC_API_KEY",
+        soul: "Updated soul."
+      },
+      previousAgent
+    );
+
+    const agentYaml = await readFile(join(descriptor.workspacePath, "agent.yaml"), "utf8");
+    expect(agentYaml).toContain('name: "Ops Agent Updated"');
+    expect(agentYaml).toContain('provider: "anthropic"');
+    expect(agentYaml).toContain("secretRef: ANTHROPIC_API_KEY");
+    await expect(readFile(join(descriptor.workspacePath, "soul.md"), "utf8")).resolves.toBe("Updated soul.");
+  });
+
+  it("does not overwrite user-edited files during update sync and returns a conflict", async () => {
+    const descriptor = service.buildDescriptor("ops-agent", "12345678-abcd");
+    const previousAgent = {
+      id: "12345678-abcd",
+      name: "Ops Agent",
+      slug: "ops-agent",
+      workspaceName: descriptor.workspaceName,
+      workspacePath: descriptor.relativeWorkspacePath,
+      modelProvider: "openai",
+      modelSecretRef: "OPENAI_API_KEY",
+      soul: "Initial soul."
+    };
+    await service.initializeWorkspace(previousAgent, { allowExistingWorkspace: false });
+    await writeFile(join(descriptor.workspacePath, "soul.md"), "User edited soul.\n", "utf8");
+
+    await expect(
+      service.syncWorkspace(
+        {
+          ...previousAgent,
+          soul: "Updated soul."
+        },
+        previousAgent
+      )
+    ).rejects.toThrow("workspace file has user edits: soul.md");
+    await expect(readFile(join(descriptor.workspacePath, "soul.md"), "utf8")).resolves.toBe("User edited soul.\n");
+  });
 });

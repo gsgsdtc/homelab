@@ -24,10 +24,12 @@ describe("AgentsService", () => {
   const workspaces = {
     buildDescriptor: jest.fn(),
     initializeWorkspace: jest.fn(),
+    syncWorkspace: jest.fn(),
     getGitStatus: jest.fn(() => "available")
   } as unknown as AgentWorkspaceService & {
     buildDescriptor: jest.Mock;
     initializeWorkspace: jest.Mock;
+    syncWorkspace: jest.Mock;
     getGitStatus: jest.Mock;
   };
 
@@ -155,6 +157,69 @@ describe("AgentsService", () => {
 
     expect(prisma.agent.update).not.toHaveBeenCalled();
     expect(workspaces.initializeWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("syncs workspace files during update using the previous Agent as the managed baseline", async () => {
+    prisma.agent.findUnique.mockResolvedValueOnce(
+      agentFrom({
+        id: "agent-12345678",
+        name: "Ops Agent",
+        modelProvider: "openai",
+        modelSecretRef: "OPENAI_API_KEY",
+        soul: "Initial soul."
+      })
+    );
+    prisma.agent.update.mockImplementation(async ({ where, data }: { where: { id: string }; data: any }) =>
+      agentFrom({
+        id: where.id,
+        name: data.name ?? "Ops Agent Updated",
+        modelProvider: data.modelProvider ?? "anthropic",
+        modelSecretRef: data.modelSecretRef ?? "ANTHROPIC_API_KEY",
+        soul: data.soul ?? "Updated soul.",
+        ...data
+      })
+    );
+    const service = new AgentsService(prisma, workspaces);
+
+    const result = await service.update("agent-12345678", {
+      name: "Ops Agent Updated",
+      modelProvider: "anthropic",
+      modelSecretRef: "ANTHROPIC_API_KEY",
+      soul: "Updated soul."
+    });
+
+    expect(workspaces.syncWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "agent-12345678",
+        name: "Ops Agent Updated",
+        modelProvider: "anthropic",
+        modelSecretRef: "ANTHROPIC_API_KEY",
+        soul: "Updated soul."
+      }),
+      expect.objectContaining({
+        id: "agent-12345678",
+        name: "Ops Agent",
+        modelProvider: "openai",
+        modelSecretRef: "OPENAI_API_KEY",
+        soul: "Initial soul."
+      })
+    );
+    expect(workspaces.initializeWorkspace).not.toHaveBeenCalled();
+    expect(result.status).toBe(AgentStatus.ready);
+  });
+
+  it("returns init_failed when update sync finds user-edited workspace files", async () => {
+    prisma.agent.findUnique.mockResolvedValueOnce(agentFrom({ id: "agent-12345678" }));
+    workspaces.syncWorkspace.mockRejectedValueOnce(new Error("workspace file has user edits: soul.md"));
+    const service = new AgentsService(prisma, workspaces);
+
+    const result = await service.update("agent-12345678", { soul: "Updated soul." });
+
+    expect(result.status).toBe(AgentStatus.init_failed);
+    expect(result.initError).toEqual({
+      code: "WORKSPACE_INITIALIZATION_FAILED",
+      message: "workspace file has user edits: soul.md"
+    });
   });
 
   it("returns fixed detail API fields for initializing, ready, and init_failed statuses", async () => {

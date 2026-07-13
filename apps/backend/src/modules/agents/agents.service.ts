@@ -65,7 +65,7 @@ export class AgentsService {
 
   async update(id: string, dto: UpdateAgentDto): Promise<PublicAgent> {
     this.assertNoSecretLeak(dto);
-    await this.findAgent(id);
+    const previousAgent = await this.findAgent(id);
     const agent = await this.prisma.agent.update({
       where: { id },
       data: {
@@ -76,7 +76,7 @@ export class AgentsService {
       }
     });
 
-    const initialized = await this.initializeAgent(agent, true);
+    const initialized = await this.syncAgentWorkspace(agent, previousAgent);
     return this.toPublic(initialized);
   }
 
@@ -97,6 +97,36 @@ export class AgentsService {
 
     try {
       await this.workspaces.initializeWorkspace(agent, { allowExistingWorkspace });
+      return await this.prisma.agent.update({
+        where: { id: agent.id },
+        data: {
+          status: AgentStatus.ready,
+          initializationError: null,
+          initializedAt: new Date()
+        }
+      });
+    } catch (error) {
+      return this.prisma.agent.update({
+        where: { id: agent.id },
+        data: {
+          status: AgentStatus.init_failed,
+          initializationError: this.formatError(error)
+        }
+      });
+    }
+  }
+
+  private async syncAgentWorkspace(agent: Agent, previousAgent: Agent): Promise<Agent> {
+    await this.prisma.agent.update({
+      where: { id: agent.id },
+      data: {
+        status: AgentStatus.initializing,
+        initializationError: null
+      }
+    });
+
+    try {
+      await this.workspaces.syncWorkspace(agent, previousAgent);
       return await this.prisma.agent.update({
         where: { id: agent.id },
         data: {
