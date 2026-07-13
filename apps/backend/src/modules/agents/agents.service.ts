@@ -93,11 +93,20 @@ export class AgentsService {
     }
     this.assertNoSecretLeak({ soul });
     const agent = await this.findAgent(id);
+    const previousSoul = await this.workspaces.readSoul(agent);
+    if (previousSoul.status === "error" || previousSoul.content === null) {
+      throw new Error(previousSoul.message || "soul read failed");
+    }
     await this.workspaces.writeSoul(agent, soul);
-    await this.prisma.agent.update({
-      where: { id },
-      data: { soul }
-    });
+    try {
+      await this.prisma.agent.update({
+        where: { id },
+        data: { soul }
+      });
+    } catch (error) {
+      await this.rollbackSoulWrite(agent, previousSoul);
+      throw error;
+    }
     return this.get(id);
   }
 
@@ -260,6 +269,14 @@ export class AgentsService {
       throw new BadRequestException("soul content must not be blank");
     }
     return soul;
+  }
+
+  private async rollbackSoulWrite(agent: Agent, previousSoul: AgentSoulRead): Promise<void> {
+    if (previousSoul.status === "missing") {
+      await this.workspaces.deleteSoul(agent);
+      return;
+    }
+    await this.workspaces.writeSoul(agent, previousSoul.content ?? "");
   }
 
   private toInitError(agent: Agent): AgentInitError | null {

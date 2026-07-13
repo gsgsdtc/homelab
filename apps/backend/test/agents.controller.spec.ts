@@ -1,5 +1,7 @@
-import { BadRequestException } from "@nestjs/common";
-import { AgentStatus } from "@prisma/client";
+import { BadRequestException, ExecutionContext } from "@nestjs/common";
+import { Reflector } from "@nestjs/core";
+import { AgentStatus, UserRole } from "@prisma/client";
+import { RolesGuard } from "../src/common/guards/roles.guard";
 import { AgentsController } from "../src/modules/agents/agents.controller";
 import { AgentWorkspaceService } from "../src/modules/agents/agent-workspace.service";
 import { AgentsService } from "../src/modules/agents/agents.service";
@@ -22,11 +24,13 @@ describe("AgentsController broad unit", () => {
     getGitStatus: jest.fn(() => "available"),
     readSoul: jest.fn(),
     writeSoul: jest.fn(),
+    deleteSoul: jest.fn(),
     readSoulForRun: jest.fn()
   } as unknown as AgentWorkspaceService & {
     getGitStatus: jest.Mock;
     readSoul: jest.Mock;
     writeSoul: jest.Mock;
+    deleteSoul: jest.Mock;
     readSoulForRun: jest.Mock;
   };
 
@@ -68,10 +72,15 @@ describe("AgentsController broad unit", () => {
 
   it("saves nonblank soul by writing workspace/soul.md and syncing the DB snapshot", async () => {
     workspaces.writeSoul.mockResolvedValue(undefined);
-    workspaces.readSoul.mockResolvedValue({
-      content: "Updated soul",
-      status: "loaded"
-    });
+    workspaces.readSoul
+      .mockResolvedValueOnce({
+        content: "Previous soul",
+        status: "loaded"
+      })
+      .mockResolvedValueOnce({
+        content: "Updated soul",
+        status: "loaded"
+      });
 
     await expect(controller.saveSoul("agent-12345678", { soul: "Updated soul" })).resolves.toMatchObject({
       soul: "Updated soul",
@@ -82,6 +91,43 @@ describe("AgentsController broad unit", () => {
       where: { id: "agent-12345678" },
       data: { soul: "Updated soul" }
     });
+  });
+
+  it("restores the previous workspace/soul.md when DB snapshot sync fails", async () => {
+    workspaces.readSoul.mockResolvedValueOnce({
+      content: "Previous soul",
+      status: "loaded"
+    });
+    workspaces.writeSoul.mockResolvedValue(undefined);
+    prisma.agent.update.mockRejectedValueOnce(new Error("db unavailable"));
+
+    await expect(controller.saveSoul("agent-12345678", { soul: "Updated soul" })).rejects.toThrow("db unavailable");
+
+    expect(workspaces.writeSoul).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: "agent-12345678" }),
+      "Updated soul"
+    );
+    expect(workspaces.writeSoul).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: "agent-12345678" }),
+      "Previous soul"
+    );
+    expect(workspaces.deleteSoul).not.toHaveBeenCalled();
+  });
+
+  it("deletes a newly created workspace/soul.md when DB snapshot sync fails after a missing file", async () => {
+    workspaces.readSoul.mockResolvedValueOnce({
+      content: "# Ops Agent\n",
+      status: "missing"
+    });
+    workspaces.writeSoul.mockResolvedValue(undefined);
+    prisma.agent.update.mockRejectedValueOnce(new Error("db unavailable"));
+
+    await expect(controller.saveSoul("agent-12345678", { soul: "Recovered soul" })).rejects.toThrow("db unavailable");
+
+    expect(workspaces.writeSoul).toHaveBeenCalledTimes(1);
+    expect(workspaces.deleteSoul).toHaveBeenCalledWith(expect.objectContaining({ id: "agent-12345678" }));
   });
 
   it("rejects blank soul without changing workspace/soul.md or the DB snapshot", async () => {
@@ -99,6 +145,31 @@ describe("AgentsController broad unit", () => {
     await expect(service.loadSoulForRun("agent-12345678")).resolves.toBe("Run B soul");
     expect(workspaces.readSoulForRun).toHaveBeenCalledTimes(2);
     expect(workspaces.readSoulForRun).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "agent-12345678" }));
+  });
+
+  it("denies non-admin soul saves before the Agent service can write workspace files", () => {
+    const agents = {
+      saveSoul: jest.fn()
+    };
+    const guardedController = new AgentsController(agents as never);
+    const guard = new RolesGuard(new Reflector());
+    const context = {
+      getHandler: () => guardedController.saveSoul,
+      getClass: () => AgentsController,
+      switchToHttp: () => ({
+        getRequest: () => ({
+          user: { sub: "user_1", username: "user", role: UserRole.USER }
+        })
+      })
+    } as unknown as ExecutionContext;
+
+    const allowed = guard.canActivate(context);
+    if (allowed) {
+      void guardedController.saveSoul("agent-12345678", { soul: "Attempted bypass" });
+    }
+
+    expect(allowed).toBe(false);
+    expect(agents.saveSoul).not.toHaveBeenCalled();
   });
 
   function agentFrom(overrides: Partial<any>) {

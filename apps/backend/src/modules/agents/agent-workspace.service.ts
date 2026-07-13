@@ -1,5 +1,5 @@
 import { constants, existsSync } from "fs";
-import { access, lstat, mkdir, readFile, realpath, writeFile } from "fs/promises";
+import { access, lstat, mkdir, readFile, realpath, rm, writeFile } from "fs/promises";
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { join, relative, resolve, sep } from "path";
@@ -156,6 +156,25 @@ export class AgentWorkspaceService {
     await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
     await this.assertSoulPathSafe(descriptor, { allowMissingFile: true });
     await writeFile(this.soulPath(descriptor), content, "utf8");
+  }
+
+  async deleteSoul(agent: Pick<InitializeWorkspaceInput, "name" | "workspaceName" | "workspacePath">): Promise<void> {
+    const descriptor = this.descriptorFromAgent(agent);
+    await this.assertWorkspaceRootChainSafe();
+    await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
+    const soulPath = this.soulPath(descriptor);
+    this.assertInsideRoot(descriptor.rootPath, soulPath);
+    const stat = await this.lstatIfExists(soulPath);
+    if (!stat) {
+      return;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error("soul path must not be a symbolic link");
+    }
+    if (!stat.isFile()) {
+      throw new Error("soul path exists and is not a file");
+    }
+    await rm(soulPath);
   }
 
   private descriptorFromAgent(agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">) {
