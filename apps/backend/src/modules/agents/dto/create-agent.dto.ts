@@ -19,7 +19,7 @@ export class CreateAgentDto {
   modelProviderId?: string;
 
   /** Compile-time compatibility only; ValidationPipe rejects legacy API fields. */
-  modelProvider?: string;
-  modelSecretRef?: string;
-  soul?: string;
+  declare modelProvider?: string;
+  declare modelSecretRef?: string;
+  declare soul?: string;
 }

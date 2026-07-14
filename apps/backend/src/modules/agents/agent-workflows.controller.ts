@@ -65,7 +65,7 @@ export class AgentWorkflowCapabilitiesController {
   constructor(private readonly workflows: AgentWorkflowsService) {}
 
   @Get()
-  get(@Param("agentId") _agentId: string) {
-    return this.workflows.capabilities();
+  get(@Param("agentId") agentId: string) {
+    return this.workflows.capabilities(agentId);
   }
 }

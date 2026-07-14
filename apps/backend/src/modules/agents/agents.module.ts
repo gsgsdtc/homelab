@@ -20,6 +20,8 @@ import { MASTRA_AGENT_WORKFLOW_RELOAD_HOOK } from "./agent-workflow-reloader";
 import { LocalMastraWorkflowReloadHook } from "./local-mastra-workflow-reload.hook";
 import { MastraAgentWorkflowReloader } from "./mastra-agent-workflow-reloader";
 import { DynamicImportMastraWorkflowRuntimeRegistry, MASTRA_WORKFLOW_RUNTIME_REGISTRY } from "./mastra-workflow-runtime.registry";
+import { PostgresCommitCoordinator } from "./postgres-commit-coordinator";
+import { Gfu29TestControlService } from "./gfu29-test-control.service";
 
 @Module({
   imports: [PrismaModule, AppKeysModule, ModelProvidersModule],
@@ -34,6 +36,8 @@ import { DynamicImportMastraWorkflowRuntimeRegistry, MASTRA_WORKFLOW_RUNTIME_REG
   providers: [
     AgentsService,
     AgentWorkspaceService,
+    PostgresCommitCoordinator,
+    Gfu29TestControlService,
     AgentSkillsService,
     SkillPackageValidator,
     RuntimeReloadClient,

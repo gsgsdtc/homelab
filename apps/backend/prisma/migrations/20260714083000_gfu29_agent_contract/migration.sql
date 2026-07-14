@@ -64,6 +64,13 @@ WHERE NULLIF(BTRIM(agent."modelProvider"), '') IS NOT NULL
   AND provider."isActive" = TRUE
   AND provider."nameKey" = LOWER(BTRIM(agent."modelProvider"));
 
+-- Canonicalize the retained rollback column as well. This makes the legacy
+-- and primary columns express the same Provider-ID semantics after a nameKey
+-- fallback and lets the post-deploy validator use a strict equality check.
+UPDATE "Agent"
+SET "modelProvider" = "modelProviderId"
+WHERE "modelProviderId" IS NOT NULL;
+
 -- Validate inside the same transaction so any failed check rolls back the
 -- schema expansion and every backfilled row.
 DO $$
@@ -125,5 +132,61 @@ CREATE UNIQUE INDEX "AgentSkillCatalogVersion_catalogSkillId_version_key" ON "Ag
 CREATE INDEX "AgentSkillCatalogVersion_catalogSkillId_createdAt_idx" ON "AgentSkillCatalogVersion"("catalogSkillId", "createdAt");
 ALTER TABLE "AgentSkillCatalogVersion" ADD CONSTRAINT "AgentSkillCatalogVersion_catalogSkillId_fkey"
   FOREIGN KEY ("catalogSkillId") REFERENCES "AgentSkillCatalogSkill"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- Compatibility for a real rollback binary that only knows modelProvider.
+-- Old INSERT/UPDATE statements are resolved and canonicalized in the database,
+-- so switching back to the primary binary cannot reveal stale new-column data.
+CREATE FUNCTION "gfu29_sync_agent_provider_columns"() RETURNS TRIGGER AS $$
+DECLARE
+  requested_provider TEXT;
+  resolved_provider TEXT;
+  legacy_only_write BOOLEAN := FALSE;
+BEGIN
+  IF TG_OP = 'UPDATE'
+     AND NEW."modelProvider" IS DISTINCT FROM OLD."modelProvider"
+     AND NEW."modelProviderId" IS NOT DISTINCT FROM OLD."modelProviderId" THEN
+    requested_provider := NULLIF(BTRIM(NEW."modelProvider"), '');
+    legacy_only_write := TRUE;
+  ELSIF TG_OP = 'UPDATE'
+     AND NEW."modelProviderId" IS DISTINCT FROM OLD."modelProviderId"
+     AND NEW."modelProvider" IS NOT DISTINCT FROM OLD."modelProvider" THEN
+    requested_provider := NULLIF(BTRIM(NEW."modelProviderId"), '');
+  ELSE
+    requested_provider := NULLIF(BTRIM(COALESCE(NEW."modelProviderId", NEW."modelProvider")), '');
+  END IF;
+
+  IF requested_provider IS NULL THEN
+    NEW."modelProvider" := NULL;
+    NEW."modelProviderId" := NULL;
+    RETURN NEW;
+  END IF;
+
+  SELECT provider."id" INTO resolved_provider
+  FROM "ModelProvider" AS provider
+  WHERE provider."id" = requested_provider
+    AND provider."isActive" = TRUE;
+
+  IF resolved_provider IS NULL THEN
+    SELECT provider."id" INTO resolved_provider
+    FROM "ModelProvider" AS provider
+    WHERE provider."nameKey" = LOWER(requested_provider)
+      AND provider."isActive" = TRUE;
+  END IF;
+
+  IF resolved_provider IS NULL THEN
+    RAISE EXCEPTION 'GFU-29 Provider reference is unresolved or disabled';
+  END IF;
+
+  NEW."modelProvider" := resolved_provider;
+  NEW."modelProviderId" := resolved_provider;
+  IF legacy_only_write AND NEW."revision" = OLD."revision" THEN
+    NEW."revision" := OLD."revision" + 1;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER "gfu29_agent_provider_compat"
+BEFORE INSERT OR UPDATE OF "modelProvider", "modelProviderId" ON "Agent"
+FOR EACH ROW EXECUTE FUNCTION "gfu29_sync_agent_provider_columns"();
 
 COMMIT;

@@ -12,6 +12,7 @@ import { AgentSkillsService } from "../src/modules/agents/agent-skills.service";
 import { AgentWorkspaceService } from "../src/modules/agents/agent-workspace.service";
 import { AgentsService } from "../src/modules/agents/agents.service";
 import { PrismaService } from "../src/modules/prisma/prisma.service";
+import { CommitBarrier, PostgresCommitCoordinator } from "../src/modules/agents/postgres-commit-coordinator";
 
 describe("GFU-29 file and PostgreSQL revision integration", () => {
   jest.setTimeout(120_000);
@@ -23,8 +24,11 @@ describe("GFU-29 file and PostgreSQL revision integration", () => {
   let repoRoot: string;
   let seed: any;
   let prisma: PrismaClient;
+  let prismaSecond: PrismaClient;
   let workspaces: AgentWorkspaceService;
+  let secondWorkspaces: AgentWorkspaceService;
   let agents: AgentsService;
+  let secondAgents: AgentsService;
   let workflows: AgentWorkflowsService;
   const agentId = "concurrency-agent-12345678";
 
@@ -35,19 +39,30 @@ describe("GFU-29 file and PostgreSQL revision integration", () => {
     prisma = new PrismaClient({
       datasourceUrl: withSchema(adminUrl, seed.databaseNamespace),
     });
+    prismaSecond = new PrismaClient({
+      datasourceUrl: withSchema(adminUrl, seed.databaseNamespace),
+    });
     workspaces = new AgentWorkspaceService(config(repoRoot));
+    secondWorkspaces = new AgentWorkspaceService(config(repoRoot));
     agents = new AgentsService(prisma as unknown as PrismaService, workspaces, {
       resolveProviderForAgent: jest.fn(async (providerId?: string) => ({
         id: providerId ?? seed.resources.defaultProviderId,
         name: "Fixture",
       })),
-    } as any);
+    } as any, new PostgresCommitCoordinator(prisma as unknown as PrismaService));
+    secondAgents = new AgentsService(prismaSecond as unknown as PrismaService, secondWorkspaces, {
+      resolveProviderForAgent: jest.fn(async (providerId?: string) => ({
+        id: providerId ?? seed.resources.defaultProviderId,
+        name: "Fixture",
+      })),
+    } as any, new PostgresCommitCoordinator(prismaSecond as unknown as PrismaService));
     const validator = new AgentWorkflowValidator(config(repoRoot));
     workflows = new AgentWorkflowsService(
       prisma as unknown as PrismaService,
       workspaces,
       validator,
       { reloadWorkflow: jest.fn() } as unknown as AgentWorkflowRuntimeClient,
+      new PostgresCommitCoordinator(prisma as unknown as PrismaService),
     );
 
     const descriptor = workspaces.buildDescriptor("concurrency-agent", agentId);
@@ -74,6 +89,7 @@ describe("GFU-29 file and PostgreSQL revision integration", () => {
   });
 
   afterAll(async () => {
+    await prismaSecond.$disconnect();
     await prisma.$disconnect();
     fixture(["--action", "teardown", "--test-run-id", seed.testRunId]);
     await rm(fixtureRoot, { recursive: true, force: true });
@@ -81,10 +97,17 @@ describe("GFU-29 file and PostgreSQL revision integration", () => {
   });
 
   it("allows exactly one same-revision Agent PATCH and keeps DB plus agent.yaml aligned", async () => {
-    const results = await Promise.allSettled([
-      agents.update(agentId, { name: "Winner A", expectedRevision: 1 }),
-      agents.update(agentId, { name: "Winner B", expectedRevision: 1 }),
-    ]);
+    const barriers = commitBarrierPair(`agent:${agentId}`);
+    const first = agentService(prisma, workspaces, barriers.first);
+    const second = agentService(prismaSecond, secondWorkspaces, barriers.second);
+    const firstUpdate = first.update(agentId, { name: "Winner A", expectedRevision: 1 });
+    await barriers.firstAcquired;
+    const secondUpdate = second.update(agentId, { name: "Winner B", expectedRevision: 1 });
+    await barriers.secondAttempted;
+    expect(barriers.events).toEqual(["first-acquired", "second-attempted"]);
+    barriers.releaseFirst();
+    const results = await Promise.allSettled([firstUpdate, secondUpdate]);
+    expect(barriers.events).toEqual(["first-acquired", "second-attempted", "second-acquired"]);
     expect(results.filter((item) => item.status === "fulfilled")).toHaveLength(
       1,
     );
@@ -129,7 +152,7 @@ describe("GFU-29 file and PostgreSQL revision integration", () => {
 
     const results = await Promise.allSettled([
       agents.retryInitialization(x1Id),
-      agents.retryInitialization(x1Id),
+      secondAgents.retryInitialization(x1Id),
     ]);
     expect(results.filter((item) => item.status === "fulfilled")).toHaveLength(
       1,
@@ -153,88 +176,6 @@ describe("GFU-29 file and PostgreSQL revision integration", () => {
         "skills",
         "workflows",
       ]),
-    );
-  });
-
-  it("runs the expand-compatible legacy-read rollback target through create and update", async () => {
-    const legacyReadAgents = new (AgentsService as any)(
-      prisma as unknown as PrismaService,
-      workspaces,
-      {
-        resolveProviderForAgent: jest.fn(async (providerId?: string) => ({
-          id: providerId ?? seed.resources.defaultProviderId,
-          name: "Fixture",
-        })),
-      },
-      {
-        get: jest.fn((key: string) =>
-          key === "AGENT_PROVIDER_READ_MODE" ? "legacy" : undefined,
-        ),
-      },
-    ) as AgentsService;
-
-    const updated = await legacyReadAgents.update(agentId, {
-      modelProviderId: seed.resources.alternateProviderId,
-      expectedRevision: 2,
-    });
-    const updatedRow = await prisma.agent.findUniqueOrThrow({
-      where: { id: agentId },
-    });
-    const updatedYaml = await readFile(
-      join(repoRoot, updatedRow.workspacePath, "agent.yaml"),
-      "utf8",
-    );
-    expect(updated.modelProviderId).toBe(seed.resources.alternateProviderId);
-    expect(updatedRow.modelProvider).toBe(seed.resources.alternateProviderId);
-    expect(updatedRow.modelProviderId).toBe(seed.resources.alternateProviderId);
-    expect(updatedYaml).toContain(
-      `provider: "${seed.resources.alternateProviderId}"`,
-    );
-
-    await prisma.agent.update({
-      where: { id: agentId },
-      data: { modelProvider: seed.resources.explicitProviderId },
-    });
-    await writeFile(
-      join(repoRoot, updatedRow.workspacePath, "agent.yaml"),
-      updatedYaml.replace(
-        seed.resources.alternateProviderId,
-        seed.resources.explicitProviderId,
-      ),
-      "utf8",
-    );
-    await expect(legacyReadAgents.get(agentId)).resolves.toMatchObject({
-      modelProviderId: seed.resources.explicitProviderId,
-      providerSummary: {
-        id: seed.resources.explicitProviderId,
-        source: "explicit",
-      },
-    });
-    await legacyReadAgents.update(agentId, {
-      name: "Legacy Updated",
-      expectedRevision: 3,
-    });
-    const converged = await prisma.agent.findUniqueOrThrow({
-      where: { id: agentId },
-    });
-    expect(converged.modelProvider).toBe(seed.resources.explicitProviderId);
-    expect(converged.modelProviderId).toBe(seed.resources.explicitProviderId);
-
-    const created = await legacyReadAgents.create({
-      name: "Rollback Created",
-      modelProviderId: seed.resources.explicitProviderId,
-    });
-    const createdRow = await prisma.agent.findUniqueOrThrow({
-      where: { id: created.id },
-    });
-    const createdYaml = await readFile(
-      join(repoRoot, createdRow.workspacePath, "agent.yaml"),
-      "utf8",
-    );
-    expect(createdRow.modelProvider).toBe(seed.resources.explicitProviderId);
-    expect(createdRow.modelProviderId).toBe(seed.resources.explicitProviderId);
-    expect(createdYaml).toContain(
-      `provider: "${seed.resources.explicitProviderId}"`,
     );
   });
 
@@ -317,10 +258,17 @@ describe("GFU-29 file and PostgreSQL revision integration", () => {
   });
 
   it("allows exactly one same-revision Soul save and keeps file hash equal to DB", async () => {
-    const results = await Promise.allSettled([
-      agents.saveSoul(agentId, { content: "# Soul A\n", expectedRevision: 1 }),
-      agents.saveSoul(agentId, { content: "# Soul B\n", expectedRevision: 1 }),
-    ]);
+    const barriers = commitBarrierPair(`soul:${agentId}`);
+    const first = agentService(prisma, workspaces, barriers.first);
+    const second = agentService(prismaSecond, secondWorkspaces, barriers.second);
+    const firstSave = first.saveSoul(agentId, { content: "# Soul A\n", expectedRevision: 1 });
+    await barriers.firstAcquired;
+    const secondSave = second.saveSoul(agentId, { content: "# Soul B\n", expectedRevision: 1 });
+    await barriers.secondAttempted;
+    expect(barriers.events).toEqual(["first-acquired", "second-attempted"]);
+    barriers.releaseFirst();
+    const results = await Promise.allSettled([firstSave, secondSave]);
+    expect(barriers.events).toEqual(["first-acquired", "second-attempted", "second-acquired"]);
     expect(results.filter((item) => item.status === "fulfilled")).toHaveLength(
       1,
     );
@@ -353,16 +301,24 @@ describe("GFU-29 file and PostgreSQL revision integration", () => {
   });
 
   it("allows exactly one same-revision Workflow save and enforces validate ownership", async () => {
-    const results = await Promise.allSettled([
-      workflows.update(agentId, "concurrent-flow", {
+    const resource = `workflow:${agentId}:concurrent-flow`;
+    const barriers = commitBarrierPair(resource);
+    const first = workflowService(prisma, workspaces, barriers.first);
+    const second = workflowService(prismaSecond, secondWorkspaces, barriers.second);
+    const firstSave = first.update(agentId, "concurrent-flow", {
         source: workflowSource("v2-a"),
         expectedRevision: 1,
-      }),
-      workflows.update(agentId, "concurrent-flow", {
+      });
+    await barriers.firstAcquired;
+    const secondSave = second.update(agentId, "concurrent-flow", {
         source: workflowSource("v2-b"),
         expectedRevision: 1,
-      }),
-    ]);
+      });
+    await barriers.secondAttempted;
+    expect(barriers.events).toEqual(["first-acquired", "second-attempted"]);
+    barriers.releaseFirst();
+    const results = await Promise.allSettled([firstSave, secondSave]);
+    expect(barriers.events).toEqual(["first-acquired", "second-attempted", "second-acquired"]);
     expect(results.filter((item) => item.status === "fulfilled")).toHaveLength(
       1,
     );
@@ -458,7 +414,70 @@ describe("GFU-29 file and PostgreSQL revision integration", () => {
       ),
     );
   }
+
+  function agentService(db: PrismaClient, workspace: AgentWorkspaceService, barrier: CommitBarrier) {
+    return new AgentsService(
+      db as unknown as PrismaService,
+      workspace,
+      {
+        resolveProviderForAgent: jest.fn(async (providerId?: string) => ({
+          id: providerId ?? seed.resources.defaultProviderId,
+          name: "Fixture",
+        })),
+      } as any,
+      new PostgresCommitCoordinator(db as unknown as PrismaService, barrier),
+    );
+  }
+
+  function workflowService(db: PrismaClient, workspace: AgentWorkspaceService, barrier: CommitBarrier) {
+    return new AgentWorkflowsService(
+      db as unknown as PrismaService,
+      workspace,
+      new AgentWorkflowValidator(config(repoRoot)),
+      { reloadWorkflow: jest.fn() } as unknown as AgentWorkflowRuntimeClient,
+      new PostgresCommitCoordinator(db as unknown as PrismaService, barrier),
+    );
+  }
 });
+
+function commitBarrierPair(resource: string) {
+  const firstAcquired = deferred();
+  const secondAttempted = deferred();
+  const release = deferred();
+  const events: string[] = [];
+  return {
+    events,
+    firstAcquired: firstAcquired.promise,
+    secondAttempted: secondAttempted.promise,
+    releaseFirst: release.resolve,
+    first: {
+      async afterLock(lockedResource: string) {
+        if (lockedResource !== resource) return;
+        events.push("first-acquired");
+        firstAcquired.resolve();
+        await release.promise;
+      },
+    } satisfies CommitBarrier,
+    second: {
+      async beforeLock(lockedResource: string) {
+        if (lockedResource !== resource) return;
+        events.push("second-attempted");
+        secondAttempted.resolve();
+      },
+      async afterLock(lockedResource: string) {
+        if (lockedResource === resource) events.push("second-acquired");
+      },
+    } satisfies CommitBarrier,
+  };
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 function workflowSource(marker: string) {
   return [

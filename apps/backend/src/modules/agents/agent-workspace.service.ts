@@ -474,6 +474,7 @@ export class AgentWorkspaceService {
       "model:",
       // Keep the rollback target's YAML key during the expand compatibility window.
       `  provider: ${(agent.modelProviderId ?? agent.modelProvider) ? this.quoteYaml(agent.modelProviderId ?? agent.modelProvider ?? "") : "null"}`,
+      `  secretRef: ${agent.modelSecretRef ?? "null"}`,
       ""
     ].join("\n");
   }
@@ -518,8 +519,9 @@ export class AgentWorkspaceService {
     await writeFile(join(rootPath, ".gitignore"), `${SECRET_IGNORE_RULES.join("\n")}\n`, "utf8");
   }
 
-  private buildSecretsExample(_agent: InitializeWorkspaceInput): string {
-    return ["# Provider credentials are managed only by the backend Provider store.", ""].join("\n");
+  private buildSecretsExample(agent: InitializeWorkspaceInput): string {
+    const ref = agent.modelSecretRef ?? "MODEL_API_KEY";
+    return ["# Real secret values must stay outside Git-tracked files.", `${ref}=`, ""].join("\n");
   }
 
   private buildReadme(agent: InitializeWorkspaceInput, descriptor: AgentWorkspaceDescriptor): string {
@@ -530,7 +532,7 @@ export class AgentWorkspaceService {
       "",
       "This directory stores Git-trackable Agent configuration only.",
       "Do not write API keys, tokens, private keys, cookies, passwords, or other real secrets here.",
-      "Provider credentials are resolved by the backend and must never be copied into this workspace.",
+      "Use `secretRef` values in configuration and provide real values through environment variables or the backend secret provider.",
       "",
       "Generated files:",
       "",

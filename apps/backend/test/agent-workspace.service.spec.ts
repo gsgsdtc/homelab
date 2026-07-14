@@ -41,8 +41,8 @@ describe("AgentWorkspaceService", () => {
     await expect(readFile(join(descriptor.workspacePath, "soul.md"), "utf8")).resolves.toBe("Keep production stable.");
     await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toBe("skills: []\n");
     await expect(readFile(join(descriptor.workspacePath, "workflows", "workflow.yaml"), "utf8")).resolves.toBe("workflows: []\n");
-    await expect(readFile(join(descriptor.workspacePath, "secrets.example.env"), "utf8")).resolves.toContain(
-      "Provider credentials are managed only by the backend Provider store"
+    await expect(readFile(join(descriptor.workspacePath, "secrets.example.env"), "utf8")).resolves.toBe(
+      "# Real secret values must stay outside Git-tracked files.\nOPENAI_API_KEY=\n"
     );
     await expect(readFile(join(repoRoot, ".homelab", "agents", ".gitignore"), "utf8")).resolves.toBe("**/.env\n**/.env.*\n**/*.secret\n**/secrets.local.*\n");
   });
@@ -375,7 +375,7 @@ describe("AgentWorkspaceService", () => {
     const agentYaml = await readFile(join(descriptor.workspacePath, "agent.yaml"), "utf8");
     expect(agentYaml).toContain('name: "Ops Agent Updated"');
     expect(agentYaml).toContain('provider: "anthropic"');
-    expect(agentYaml).not.toContain("secretRef");
+    expect(agentYaml).toContain("secretRef: ANTHROPIC_API_KEY");
     await expect(readFile(join(descriptor.workspacePath, "soul.md"), "utf8")).resolves.toBe("Updated soul.");
   });
 

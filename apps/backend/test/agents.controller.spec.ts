@@ -11,12 +11,14 @@ describe("AgentsController broad unit", () => {
   const prisma = {
     agent: {
       findUnique: jest.fn(),
-      update: jest.fn()
+      update: jest.fn(),
+      updateMany: jest.fn()
     }
   } as unknown as PrismaService & {
     agent: {
       findUnique: jest.Mock;
       update: jest.Mock;
+      updateMany: jest.Mock;
     };
   };
 
@@ -37,10 +39,12 @@ describe("AgentsController broad unit", () => {
   let controller: AgentsController;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
     controller = new AgentsController(new AgentsService(prisma, workspaces));
+    workspaces.getGitStatus.mockReturnValue("available");
     prisma.agent.findUnique.mockResolvedValue(agentFrom({ soul: "DB snapshot soul" }));
     prisma.agent.update.mockImplementation(async ({ where, data }: { where: { id: string }; data: any }) => agentFrom({ id: where.id, ...data }));
+    prisma.agent.updateMany.mockResolvedValue({ count: 1 });
   });
 
   it("returns Agent detail soul from workspace/soul.md instead of the DB snapshot", async () => {
@@ -70,15 +74,10 @@ describe("AgentsController broad unit", () => {
 
   it("saves nonblank soul by writing workspace/soul.md and syncing the DB snapshot", async () => {
     workspaces.writeSoul.mockResolvedValue(undefined);
-    workspaces.readSoul
-      .mockResolvedValueOnce({
-        content: "Previous soul",
-        status: "loaded"
-      })
-      .mockResolvedValueOnce({
-        content: "Updated soul",
-        status: "loaded"
-      });
+    workspaces.readSoul.mockResolvedValueOnce({
+      content: "Previous soul",
+      status: "loaded"
+    });
 
     await expect(
       controller.saveSoul("agent-12345678", {
@@ -90,8 +89,8 @@ describe("AgentsController broad unit", () => {
       missing: false
     });
     expect(workspaces.writeSoul).toHaveBeenCalledWith(expect.objectContaining({ id: "agent-12345678" }), "Updated soul");
-    expect(prisma.agent.update).toHaveBeenCalledWith({
-      where: { id: "agent-12345678" },
+    expect(prisma.agent.updateMany).toHaveBeenCalledWith({
+      where: { id: "agent-12345678", status: AgentStatus.ready, soulRevision: 1 },
       data: { soul: "Updated soul", soulRevision: { increment: 1 } }
     });
   });
@@ -102,7 +101,7 @@ describe("AgentsController broad unit", () => {
       status: "loaded"
     });
     workspaces.writeSoul.mockResolvedValue(undefined);
-    prisma.agent.update.mockRejectedValueOnce(new Error("db unavailable"));
+    prisma.agent.updateMany.mockRejectedValueOnce(new Error("db unavailable"));
 
     await expect(
       controller.saveSoul("agent-12345678", {
@@ -122,7 +121,7 @@ describe("AgentsController broad unit", () => {
       status: "missing"
     });
     workspaces.writeSoul.mockResolvedValue(undefined);
-    prisma.agent.update.mockRejectedValueOnce(new Error("db unavailable"));
+    prisma.agent.updateMany.mockRejectedValueOnce(new Error("db unavailable"));
 
     await expect(
       controller.saveSoul("agent-12345678", {
@@ -144,7 +143,7 @@ describe("AgentsController broad unit", () => {
     ).rejects.toThrow(BadRequestException);
 
     expect(workspaces.writeSoul).not.toHaveBeenCalled();
-    expect(prisma.agent.update).not.toHaveBeenCalled();
+    expect(prisma.agent.updateMany).not.toHaveBeenCalled();
   });
 
   it("loads a new run soul snapshot from workspace/soul.md on each run startup", async () => {

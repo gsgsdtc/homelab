@@ -57,7 +57,7 @@ async function seed() {
   await deploySchema(state);
   await seedDatabase(state);
   seedWorkspace(state);
-  seedFakeAdapter(state);
+  await seedFakeAdapter(state);
   writeState(state);
   return refreshBaselines(state);
 }
@@ -66,12 +66,11 @@ async function reset() {
   const state = loadState(required("test-run-id"));
   await dropSchema(state.databaseNamespace);
   rmSync(state.workspaceRoot, { recursive: true, force: true });
-  rmSync(adapterRoot(state), { recursive: true, force: true });
   state.clockMillis = 0;
   await deploySchema(state);
   await seedDatabase(state);
   seedWorkspace(state);
-  seedFakeAdapter(state);
+  await seedFakeAdapter(state);
   writeState(state);
   return refreshBaselines(state);
 }
@@ -81,11 +80,10 @@ async function teardown() {
   const before = await observeCounts(state);
   await dropSchema(state.databaseNamespace);
   rmSync(state.workspaceRoot, { recursive: true, force: true });
-  rmSync(adapterRoot(state), { recursive: true, force: true });
   const schemaExists = await schemaExistsOnAdmin(state.databaseNamespace);
   const workspaceEntries = countEntries(state.workspaceRoot);
-  const fakeAdapterEntries = countEntries(adapterRoot(state));
-  if (schemaExists || workspaceEntries !== 0 || fakeAdapterEntries !== 0) {
+  const fakeAdapterEntries = 0;
+  if (schemaExists || workspaceEntries !== 0) {
     throw new Error(
       `teardown verification failed after cleaning ${before.dbRows} database rows`,
     );
@@ -100,7 +98,7 @@ async function advanceClock() {
   if (!Number.isInteger(milliseconds) || milliseconds < 0)
     fail("INVALID_TEST_CLOCK_ADVANCE", "milliseconds must be >= 0");
   state.clockMillis += milliseconds;
-  const adapter = loadAdapter(state);
+  const adapter = await loadAdapter(state);
   adapter.clockMillis = state.clockMillis;
   for (const scenario of Object.values(adapter.skillScenarios)) {
     while (
@@ -110,7 +108,7 @@ async function advanceClock() {
       scenario.sequenceIndex += 1;
     Object.assign(scenario, scenario.sequence[scenario.sequenceIndex].value);
   }
-  writeAdapter(state, adapter);
+  await writeAdapter(state, adapter);
   writeState(state);
   return {
     status: "ready",
@@ -124,7 +122,7 @@ async function barrier() {
   const state = loadState(required("test-run-id"));
   const barrierId = required("barrier-id");
   const operation = required("operation");
-  const adapter = loadAdapter(state);
+  const adapter = await loadAdapter(state);
   const item = adapter.barriers[barrierId];
   if (!item) fail("FIXTURE_BARRIER_NOT_FOUND", "barrier was not found");
   if (operation !== "hold" && operation !== "release")
@@ -134,7 +132,7 @@ async function barrier() {
     );
   item.barrierState = operation === "hold" ? "held" : "released";
   item.acknowledged = true;
-  writeAdapter(state, adapter);
+  await writeAdapter(state, adapter);
   return {
     status: "ready",
     testRunId: state.testRunId,
@@ -151,7 +149,7 @@ async function observe() {
     testRunId: state.testRunId,
     clockMillis: state.clockMillis,
     counts: await observeCounts(state),
-    adapter: loadAdapter(state),
+    adapter: await loadAdapter(state),
   };
 }
 
@@ -272,7 +270,7 @@ async function seedDatabase(state) {
         ),
       ],
     });
-    await prisma.agentWorkflow.create({
+    const workflow = await prisma.agentWorkflow.create({
       data: {
         id: `workflow-${state.testRunId}`,
         agentId: r.readyAgentId,
@@ -288,6 +286,16 @@ async function seedDatabase(state) {
         revision: sha("workflow-v1"),
         editRevision: 1,
         reloadStatus: "succeeded",
+      },
+    });
+    await prisma.agentWorkflowVersion.create({
+      data: {
+        id: `workflow-version-${state.testRunId}`,
+        workflowId: workflow.id,
+        sourceHash: sha("workflow-v1"),
+        source: "workflow-v1",
+        extension: "ts",
+        relativePath: workflow.relativePath,
       },
     });
   } finally {
@@ -332,7 +340,7 @@ function seedWorkspace(state) {
   );
 }
 
-function seedFakeAdapter(state) {
+async function seedFakeAdapter(state) {
   const adapter = {
     clockMillis: 0,
     barriers: {
@@ -340,19 +348,38 @@ function seedFakeAdapter(state) {
         runId: `run-${state.testRunId}`,
         soulHash: sha("# Soul v1\n"),
         barrierState: "held",
-        acknowledged: true,
+        acknowledged: false,
       },
       "CLAIM-WF-V1-SUSPENDED": {
         taskId: `task-${state.testRunId}`,
         claimId: `claim-${state.testRunId}`,
         workflowHash: sha("workflow-v1"),
         barrierState: "held",
-        acknowledged: true,
+        acknowledged: false,
       },
     },
     skillScenarios: buildSkillScenarios(),
   };
-  writeAdapter(state, adapter);
+  const prisma = clientFor(state.databaseNamespace);
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE "Gfu29TestControl" (
+        "testRunId" TEXT PRIMARY KEY,
+        "testClockId" TEXT NOT NULL,
+        "clockMillis" BIGINT NOT NULL DEFAULT 0,
+        "adapter" JSONB NOT NULL,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO "Gfu29TestControl" ("testRunId", "testClockId", "clockMillis", "adapter") VALUES ($1, $2, 0, $3::jsonb)`,
+      state.testRunId,
+      state.testClockId,
+      JSON.stringify(adapter),
+    );
+  } finally {
+    await prisma.$disconnect();
+  }
 }
 
 function buildSkillScenarios() {
@@ -436,16 +463,17 @@ async function refreshBaselines(state) {
 async function observeCounts(state) {
   const prisma = clientFor(state.databaseNamespace);
   try {
-    const [agents, providers, workflows] = await Promise.all([
+    const [agents, providers, workflows, control] = await Promise.all([
       prisma.agent.count(),
       prisma.modelProvider.count(),
       prisma.agentWorkflow.count(),
+      prisma.$queryRawUnsafe(`SELECT COUNT(*)::int AS count FROM "Gfu29TestControl"`),
     ]);
     return {
       dbRows: agents + providers + workflows,
       agentRows: agents,
       workspaceEntries: countEntries(state.workspaceRoot),
-      fakeAdapterEntries: countEntries(adapterRoot(state)),
+      fakeAdapterEntries: control[0].count,
     };
   } finally {
     await prisma.$disconnect();
@@ -543,6 +571,7 @@ function agentRow(state, id, status, slug, providerId) {
 function workspaceRelative(state, agentId, suffix = "") {
   return [
     ".homelab",
+    "agents",
     "test-fixtures",
     state.testRunId,
     "workspaces",
@@ -556,22 +585,31 @@ function workspaceRelative(state, agentId, suffix = "") {
 function workspaceDir(state, agentId) {
   return resolve(state.workspaceRoot, agentId);
 }
-function adapterRoot(state) {
-  return resolve(root, state.testRunId, "fake-adapter");
+async function writeAdapter(state, value) {
+  const prisma = clientFor(state.databaseNamespace);
+  try {
+    await prisma.$executeRawUnsafe(
+      `UPDATE "Gfu29TestControl" SET "clockMillis" = $1, "adapter" = $2::jsonb, "updatedAt" = NOW() WHERE "testRunId" = $3`,
+      state.clockMillis,
+      JSON.stringify(value),
+      state.testRunId,
+    );
+  } finally {
+    await prisma.$disconnect();
+  }
 }
-function adapterPath(state) {
-  return resolve(adapterRoot(state), "state.json");
-}
-function writeAdapter(state, value) {
-  mkdirSync(adapterRoot(state), { recursive: true });
-  writeFileSync(
-    adapterPath(state),
-    `${JSON.stringify(value, null, 2)}\n`,
-    "utf8",
-  );
-}
-function loadAdapter(state) {
-  return JSON.parse(readFileSync(adapterPath(state), "utf8"));
+async function loadAdapter(state) {
+  const prisma = clientFor(state.databaseNamespace);
+  try {
+    const rows = await prisma.$queryRawUnsafe(
+      `SELECT "adapter" FROM "Gfu29TestControl" WHERE "testRunId" = $1`,
+      state.testRunId,
+    );
+    if (!rows[0]) fail("FIXTURE_CONTROL_NOT_FOUND", "fixture control row was not found");
+    return rows[0].adapter;
+  } finally {
+    await prisma.$disconnect();
+  }
 }
 function statePath(testRunId) {
   return resolve(root, testRunId, "state.json");

@@ -43,12 +43,12 @@ describe("GFU-29 deterministic fixture CLI", () => {
     expect(observed.adapter.barriers).toMatchObject({
       "RUN-SOUL-V1-HELD": {
         barrierState: "held",
-        acknowledged: true,
+        acknowledged: false,
         soulHash: expect.stringMatching(/^[a-f0-9]{64}$/)
       },
       "CLAIM-WF-V1-SUSPENDED": {
         barrierState: "held",
-        acknowledged: true,
+        acknowledged: false,
         workflowHash: expect.stringMatching(/^[a-f0-9]{64}$/)
       }
     });

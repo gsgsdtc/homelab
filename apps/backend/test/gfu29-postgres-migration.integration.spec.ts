@@ -42,11 +42,14 @@ describe("GFU-29 PostgreSQL Provider migration", () => {
       VALUES
         ('default-id', 'Default', 'default', 'OPENAI_COMPATIBLE', 'https://fixture.invalid', 'encrypted', 'model', TRUE, TRUE, NOW()),
         ('disabled-id', 'Disabled', 'disabled-provider', 'OPENAI_COMPATIBLE', 'https://fixture.invalid', 'encrypted', 'model', FALSE, FALSE, NOW()),
-        ('name-fallback-id', 'Fallback', 'disabled-id', 'OPENAI_COMPATIBLE', 'https://fixture.invalid', 'encrypted', 'model', TRUE, FALSE, NOW())
+        ('name-fallback-id', 'Fallback', 'disabled-id', 'OPENAI_COMPATIBLE', 'https://fixture.invalid', 'encrypted', 'model', TRUE, FALSE, NOW()),
+        ('legacy-name-id', 'Legacy Name', 'legacy-name', 'OPENAI_COMPATIBLE', 'https://fixture.invalid', 'encrypted', 'model', TRUE, FALSE, NOW())
     `);
     await db.$executeRawUnsafe(`
       INSERT INTO "Agent" ("id", "name", "slug", "status", "workspaceName", "workspacePath", "modelProvider", "soul", "updatedAt")
-      VALUES ('agent-disabled', 'Agent', 'agent', 'ready', 'agent--disabled', '.homelab/agents/agent--disabled', 'disabled-id', '', NOW())
+      VALUES
+        ('agent-disabled', 'Agent', 'agent', 'ready', 'agent--disabled', '.homelab/agents/agent--disabled', 'disabled-id', '', NOW()),
+        ('agent-name-fallback', 'Named Agent', 'named-agent', 'ready', 'agent--named', '.homelab/agents/agent--named', 'Legacy-Name', '', NOW())
     `);
 
     const rejected = runCheck("preflight");
@@ -69,7 +72,7 @@ describe("GFU-29 PostgreSQL Provider migration", () => {
     expect(runCheck("preflight")).toMatchObject({
       preflightPassed: true,
       mappedById: 1,
-      mappedByName: 0,
+      mappedByName: 1,
       exitStatus: 0,
     });
 
@@ -77,10 +80,13 @@ describe("GFU-29 PostgreSQL Provider migration", () => {
 
     await expect(columnExists("modelProviderId")).resolves.toBe(true);
     await expect(
-      db.$queryRawUnsafe<Array<{ modelProviderId: string }>>(
-        `SELECT "modelProviderId" FROM "Agent" WHERE "id" = 'agent-disabled'`,
+      db.$queryRawUnsafe<Array<{ id: string; modelProvider: string; modelProviderId: string }>>(
+        `SELECT "id", "modelProvider", "modelProviderId" FROM "Agent" ORDER BY "id"`,
       ),
-    ).resolves.toEqual([{ modelProviderId: "disabled-id" }]);
+    ).resolves.toEqual([
+      { id: "agent-disabled", modelProvider: "disabled-id", modelProviderId: "disabled-id" },
+      { id: "agent-name-fallback", modelProvider: "legacy-name-id", modelProviderId: "legacy-name-id" },
+    ]);
     expect(runCheck("validate")).toMatchObject({
       validationPassed: true,
       unresolved: 0,
@@ -88,6 +94,31 @@ describe("GFU-29 PostgreSQL Provider migration", () => {
       disabled: 0,
       exitStatus: 0,
     });
+
+    // The real rollback target only knows the legacy column. The database
+    // compatibility contract must still update the primary reference.
+    await db.$executeRawUnsafe(
+      `UPDATE "Agent" SET "modelProvider" = 'name-fallback-id' WHERE "id" = 'agent-name-fallback'`,
+    );
+    await expect(
+      db.$queryRawUnsafe<Array<{ modelProvider: string; modelProviderId: string }>>(
+        `SELECT "modelProvider", "modelProviderId" FROM "Agent" WHERE "id" = 'agent-name-fallback'`,
+      ),
+    ).resolves.toEqual([{ modelProvider: "name-fallback-id", modelProviderId: "name-fallback-id" }]);
+
+    await db.$executeRawUnsafe(`ALTER TABLE "Agent" DISABLE TRIGGER "gfu29_agent_provider_compat"`);
+    await db.$executeRawUnsafe(
+      `UPDATE "Agent" SET "modelProviderId" = 'default-id' WHERE "id" = 'agent-name-fallback'`,
+    );
+    await db.$executeRawUnsafe(`ALTER TABLE "Agent" ENABLE TRIGGER "gfu29_agent_provider_compat"`);
+    const beforeFailedValidate = await db.$queryRawUnsafe(
+      `SELECT "modelProvider", "modelProviderId", "revision" FROM "Agent" WHERE "id" = 'agent-name-fallback'`,
+    );
+    expect(runCheck("validate")).toMatchObject({ validationPassed: false, dualWriteDrift: 1, exitStatus: 2 });
+    await expect(
+      db.$queryRawUnsafe(`SELECT "modelProvider", "modelProviderId", "revision" FROM "Agent" WHERE "id" = 'agent-name-fallback'`),
+    ).resolves.toEqual(beforeFailedValidate);
+    await expect(columnExists("modelProviderId")).resolves.toBe(true);
   });
 
   function executeSql(file: string) {

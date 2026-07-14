@@ -549,6 +549,7 @@ describe("AgentWorkflowsService", () => {
   });
 
   it("does not update DB or reload when workflow source write fails", async () => {
+    prisma.agentWorkflow.findFirst.mockResolvedValue(workflow({ editRevision: 2 }));
     workspaces.writeWorkflowSource.mockRejectedValueOnce(new Error("disk full before rename"));
     const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
 
@@ -564,9 +565,10 @@ describe("AgentWorkflowsService", () => {
   });
 
   it("restores the previous workflow file when the DB commit fails", async () => {
+    prisma.agentWorkflow.findFirst.mockResolvedValue(workflow({ editRevision: 2, draftHash: "old-hash" }));
     prisma.agentWorkflow.findUnique.mockResolvedValue(workflow({ editRevision: 2, draftHash: "old-hash" }));
     workspaces.readWorkflowSource.mockResolvedValue("previous source");
-    prisma.agentWorkflow.upsert.mockRejectedValueOnce(new Error("database unavailable"));
+    prisma.agentWorkflow.updateMany.mockRejectedValueOnce(new Error("database unavailable"));
     const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
 
     await expect(

@@ -9,7 +9,6 @@ import {
   UnprocessableEntityException
 } from "@nestjs/common";
 import { Agent, AgentStatus, Prisma } from "@prisma/client";
-import { ConfigService } from "@nestjs/config";
 import { createHash, randomUUID } from "crypto";
 import { ModelProvidersService } from "../model-providers/model-providers.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -17,7 +16,8 @@ import { AgentSoulRead, AgentWorkspaceService } from "./agent-workspace.service"
 import { CreateAgentDto } from "./dto/create-agent.dto";
 import { SaveAgentSoulDto } from "./dto/save-agent-soul.dto";
 import { UpdateAgentDto } from "./dto/update-agent.dto";
-import { KeyedAsyncLock } from "./keyed-async-lock";
+import { PostgresCommitCoordinator } from "./postgres-commit-coordinator";
+import { Gfu29TestControlService } from "./gfu29-test-control.service";
 
 const SOUL_MAX_BYTES = 65_536;
 
@@ -59,8 +59,6 @@ export interface PublicAgent {
 
 @Injectable()
 export class AgentsService {
-  private readonly commitLocks = new KeyedAsyncLock();
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly workspaces: AgentWorkspaceService,
@@ -68,7 +66,9 @@ export class AgentsService {
     @Inject(ModelProvidersService)
     private readonly providers?: ModelProvidersService,
     @Optional()
-    private readonly config?: ConfigService
+    private readonly commits?: PostgresCommitCoordinator,
+    @Optional()
+    private readonly testControl?: Gfu29TestControlService
   ) {}
 
   async list(input?: AgentListQuery) {
@@ -104,9 +104,8 @@ export class AgentsService {
         select: { id: true, name: true, isActive: true }
       })
     ]);
-    const readAgents = await Promise.all(agents.map((agent) => this.normalizeReadAgent(agent)));
     const response = {
-      items: readAgents.map((agent) => this.toPublic(agent, defaultProvider)),
+      items: agents.map((agent) => this.toPublic(agent, defaultProvider)),
       total,
       page,
       pageSize
@@ -191,10 +190,10 @@ export class AgentsService {
         message: "expectedRevision is required"
       });
     }
-    return this.commitLocks.run(`agent:${id}`, () => this.updateLocked(id, dto));
+    return this.withCommit(`agent:${id}`, (tx) => this.updateLocked(tx, id, dto));
   }
 
-  private async updateLocked(id: string, dto: UpdateAgentDto): Promise<PublicAgent> {
+  private async updateLocked(tx: Prisma.TransactionClient, id: string, dto: UpdateAgentDto): Promise<PublicAgent> {
     for (const [field, value] of [
       ["name", dto.name],
       ["modelProviderId", dto.modelProviderId ?? dto.modelProvider],
@@ -203,7 +202,7 @@ export class AgentsService {
     ] as Array<[string, string | null | undefined]>) {
       if (value) this.assertNoSecretLeak(value, field);
     }
-    const previous = await this.findAgent(id);
+    const previous = await this.findAgentWith(tx, id);
     const expectedRevision = dto.expectedRevision;
     if (previous.revision !== expectedRevision) {
       throw this.revisionConflict(previous.revision);
@@ -230,7 +229,7 @@ export class AgentsService {
     }
 
     try {
-      const result = await this.updateMany({
+      const result = await this.updateManyOn(tx, {
         where: { id, revision: expectedRevision },
         data: {
           name: candidate.name,
@@ -242,7 +241,7 @@ export class AgentsService {
         }
       });
       if (result.count !== 1) {
-        const current = await this.findAgent(id);
+        const current = await this.findAgentWith(tx, id);
         throw this.revisionConflict(current.revision);
       }
     } catch (error) {
@@ -250,7 +249,7 @@ export class AgentsService {
       throw error;
     }
 
-    const updated = await this.findAgent(id);
+    const updated = await this.findAgentWith(tx, id);
     return this.toPublic(updated, await this.findDefaultProvider());
   }
 
@@ -278,10 +277,10 @@ export class AgentsService {
         message: "expectedRevision is required"
       });
     }
-    return this.commitLocks.run(`soul:${id}`, () => this.saveSoulLocked(id, dto));
+    return this.withCommit(`soul:${id}`, (tx) => this.saveSoulLocked(tx, id, dto));
   }
 
-  private async saveSoulLocked(id: string, dto: SaveAgentSoulDto) {
+  private async saveSoulLocked(tx: Prisma.TransactionClient, id: string, dto: SaveAgentSoulDto) {
     const content = dto.content ?? dto.soul ?? "";
     const bytes = Buffer.byteLength(content, "utf8");
     if (bytes > SOUL_MAX_BYTES) {
@@ -297,7 +296,7 @@ export class AgentsService {
       });
     }
     this.assertNoSecretLeak(content, "content");
-    const agent = await this.findAgent(id);
+    const agent = await this.findAgentWith(tx, id);
     this.assertReady(agent);
     const expectedRevision = dto.expectedRevision;
     if (agent.soulRevision !== expectedRevision) {
@@ -316,7 +315,7 @@ export class AgentsService {
     }
     await this.workspaces.writeSoul(agent, content);
     try {
-      const updated = await this.updateMany({
+      const updated = await this.updateManyOn(tx, {
         where: {
           id,
           status: AgentStatus.ready,
@@ -334,16 +333,24 @@ export class AgentsService {
       await this.rollbackSoulWrite(agent, previousSoul);
       throw error;
     }
-    return this.getSoul(id);
+    const updated = await this.findAgentWith(tx, id);
+    return {
+      content,
+      missing: false,
+      revision: updated.soulRevision,
+      maxBytes: SOUL_MAX_BYTES
+    };
   }
 
   async loadSoulForRun(id: string): Promise<string> {
     const agent = await this.findAgent(id);
-    return this.workspaces.readSoulForRun(agent);
+    const content = await this.workspaces.readSoulForRun(agent);
+    await this.testControl?.holdSoulRun(content);
+    return content;
   }
 
   async retryInitialization(id: string): Promise<PublicAgent> {
-    return this.commitLocks.run(`initialization:${id}`, () => this.retryInitializationLocked(id));
+    return this.withCommit(`initialization:${id}`, () => this.retryInitializationLocked(id));
   }
 
   private async retryInitializationLocked(id: string): Promise<PublicAgent> {
@@ -449,7 +456,22 @@ export class AgentsService {
         code: "AGENT_NOT_FOUND",
         message: "Agent not found"
       });
-    return this.normalizeReadAgent(agent);
+    return agent;
+  }
+
+  private async findAgentWith(tx: Prisma.TransactionClient, id: string): Promise<AgentRecord> {
+    const agent = await tx.agent.findUnique({
+      where: { id },
+      include: {
+        provider: { select: { id: true, name: true, isActive: true } }
+      }
+    });
+    if (!agent)
+      throw new NotFoundException({
+        code: "AGENT_NOT_FOUND",
+        message: "Agent not found"
+      });
+    return agent;
   }
 
   private async findDefaultProvider() {
@@ -492,20 +514,7 @@ export class AgentsService {
         message: "Idempotency-Key was already used with a different payload"
       });
     }
-    return this.toPublic(await this.normalizeReadAgent(request.agent), await this.findDefaultProvider());
-  }
-
-  private async normalizeReadAgent(agent: AgentRecord): Promise<AgentRecord> {
-    if (this.config?.get<string>("AGENT_PROVIDER_READ_MODE") !== "legacy") return agent;
-    const legacyProviderId = agent.modelProvider?.trim() || null;
-    if (legacyProviderId === agent.modelProviderId) return agent;
-    const provider = legacyProviderId
-      ? await this.prisma.modelProvider.findUnique({
-          where: { id: legacyProviderId },
-          select: { id: true, name: true, isActive: true }
-        })
-      : null;
-    return { ...agent, modelProviderId: legacyProviderId, provider };
+    return this.toPublic(request.agent, await this.findDefaultProvider());
   }
 
   private toPublic(agent: AgentRecord, defaultProvider: { id: string; name: string; isActive: boolean } | null): PublicAgent {
@@ -646,6 +655,20 @@ export class AgentsService {
   private transaction<T>(callback: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     const transaction = (this.prisma as any).$transaction;
     return transaction ? transaction.call(this.prisma, callback) : callback(this.prisma as unknown as Prisma.TransactionClient);
+  }
+
+  private withCommit<T>(resource: string, callback: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return this.commits ? this.commits.run(resource, callback) : callback(this.prisma as unknown as Prisma.TransactionClient);
+  }
+
+  private async updateManyOn(db: Prisma.TransactionClient, args: Prisma.AgentUpdateManyArgs): Promise<{ count: number }> {
+    if (typeof (db.agent as any).updateMany === "function") return (db.agent as any).updateMany(args);
+    const where = args.where as { id?: string } | undefined;
+    await db.agent.update({
+      where: { id: where?.id ?? "" },
+      data: args.data as Prisma.AgentUpdateInput
+    });
+    return { count: 1 };
   }
 
   private async updateMany(args: Prisma.AgentUpdateManyArgs): Promise<{ count: number }> {

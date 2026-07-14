@@ -11,5 +11,5 @@ export class SaveAgentSoulDto {
   expectedRevision!: number;
 
   /** Compile-time compatibility only; ValidationPipe rejects the legacy API field. */
-  soul?: string;
+  declare soul?: string;
 }
