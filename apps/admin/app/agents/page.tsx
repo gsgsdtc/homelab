@@ -10,7 +10,7 @@ import {
   type AgentStatus,
   type PublicUser,
 } from "@homelab/views";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AuthShell } from "../components/auth-shell";
 import { api } from "../lib/api";
 
@@ -42,6 +42,7 @@ export default function AgentsPage() {
   const [soulMessage, setSoulMessage] = useState("");
   const [soulError, setSoulError] = useState("");
   const [savingSoul, setSavingSoul] = useState(false);
+  const detailRequestRef = useRef(0);
 
   const selected = useMemo(
     () =>
@@ -94,23 +95,49 @@ export default function AgentsPage() {
   }
 
   async function loadAgentDetail(agentId: string) {
+    const requestId = detailRequestRef.current + 1;
+    detailRequestRef.current = requestId;
     if (!agentId) {
       setSelectedDetail(null);
+      setSavedSoul("");
+      setSoulDraft("");
       return;
     }
+    const fallbackAgent = agents.find((agent) => agent.id === agentId) ?? null;
     setDetailLoading(true);
+    setSelectedDetail(null);
+    setSavedSoul("");
+    setSoulDraft("");
     setSoulError("");
     setSoulMessage("");
     try {
       const detail = await api.getAgent(agentId);
+      if (detailRequestRef.current !== requestId) {
+        return;
+      }
       setSelectedDetail(detail);
       const soul = detail.soul ?? "";
       setSavedSoul(soul);
       setSoulDraft(detail.soulFileStatus === "error" ? "" : soul);
     } catch {
+      if (detailRequestRef.current !== requestId) {
+        return;
+      }
+      if (fallbackAgent) {
+        setSelectedDetail({
+          ...fallbackAgent,
+          soul: null,
+          soulFileStatus: "error",
+          soulFileError: "Agent 详情加载失败",
+        });
+      }
+      setSavedSoul("");
+      setSoulDraft("");
       setSoulError("Agent 详情加载失败");
     } finally {
-      setDetailLoading(false);
+      if (detailRequestRef.current === requestId) {
+        setDetailLoading(false);
+      }
     }
   }
 
