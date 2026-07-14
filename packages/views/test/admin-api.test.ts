@@ -39,6 +39,200 @@ describe("AdminApiClient", () => {
     fetchMock.mockReset();
   });
 
+  it("sends paginated agent queries and provider references", async () => {
+    store.setToken("jwt-token");
+    fetchMock
+      .mockResolvedValueOnce(
+        await okJson({ items: [], total: 0, page: 2, pageSize: 50 }),
+      )
+      .mockResolvedValueOnce(
+        await okJson({ id: "agent-1", name: "Ops", status: "initializing" }),
+      );
+    const client = new AdminApiClient({
+      baseUrl: "/api/backend",
+      tokenStore: store,
+      fetcher: fetchMock,
+    });
+
+    await client.listAgents({ query: " ops ", page: 2, pageSize: 50 });
+    await client.createAgent(
+      { name: "Ops", slug: "ops", modelProviderId: null },
+      "create-key",
+    );
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/backend/agents?query=+ops+&page=2&pageSize=50",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer jwt-token" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/backend/agents",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          name: "Ops",
+          slug: "ops",
+          modelProviderId: null,
+        }),
+        headers: expect.objectContaining({ "Idempotency-Key": "create-key" }),
+      }),
+    );
+  });
+
+  it("uses revision-aware agent and soul writes", async () => {
+    fetchMock
+      .mockResolvedValueOnce(await okJson({ id: "agent-1", revision: 8 }))
+      .mockResolvedValueOnce(
+        await okJson({
+          content: "next",
+          missing: false,
+          revision: 4,
+          maxBytes: 65_536,
+        }),
+      );
+    const client = new AdminApiClient({
+      baseUrl: "/api/backend",
+      tokenStore: store,
+      fetcher: fetchMock,
+    });
+
+    await client.updateAgent("agent-1", {
+      name: "Renamed",
+      modelProviderId: "provider-1",
+      expectedRevision: 7,
+    });
+    await client.saveAgentSoul("agent-1", "next", 3);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/backend/agents/agent-1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({
+          name: "Renamed",
+          modelProviderId: "provider-1",
+          expectedRevision: 7,
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/backend/agents/agent-1/soul",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ content: "next", expectedRevision: 3 }),
+      }),
+    );
+  });
+
+  it("uses scoped catalog, skills, and workflow endpoints", async () => {
+    fetchMock.mockImplementation(() =>
+      okJson({ items: [], total: 0, page: 1, pageSize: 20 }),
+    );
+    const client = new AdminApiClient({
+      baseUrl: "/api/backend",
+      tokenStore: store,
+      fetcher: fetchMock,
+    });
+
+    await client.listSkillCatalogSources({ page: 1, pageSize: 20 });
+    await client.listSkillCatalogSkills("source/id", { page: 1, pageSize: 20 });
+    await client.listSkillCatalogVersions("source/id", "qa skill", {
+      page: 1,
+      pageSize: 20,
+    });
+    await client.installAgentSkill("agent/id", {
+      skillName: "qa",
+      sourceId: "source/id",
+      sourceType: "registry",
+      version: "1.2.0",
+    });
+    await client.saveAgentWorkflowDraft("agent/id", "support flow", {
+      source: "export default {}",
+      extension: "ts",
+      expectedRevision: 1,
+    });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/backend/skill-catalog/sources?page=1&pageSize=20",
+      "/api/backend/skill-catalog/sources/source%2Fid/skills?page=1&pageSize=20",
+      "/api/backend/skill-catalog/sources/source%2Fid/skills/qa%20skill/versions?page=1&pageSize=20",
+      "/api/backend/agents/agent%2Fid/skills/install",
+      "/api/backend/agents/agent%2Fid/workflows/support%20flow",
+    ]);
+  });
+
+  it("covers all Agent subresource operations without leaking ids into query values", async () => {
+    fetchMock.mockImplementation(() => okJson({}));
+    const client = new AdminApiClient({
+      baseUrl: "/api/backend",
+      tokenStore: store,
+      fetcher: fetchMock,
+    });
+
+    await client.getAgent("agent/id");
+    await client.updateAgent("agent/id", {
+      name: "Scoped",
+      expectedRevision: 2,
+    });
+    await client.getAgentSoul("agent/id");
+    await client.listAgentSkills("agent/id");
+    await client.updateAgentSkill("agent/id", {
+      skillName: "qa",
+      sourceId: "builtin",
+      sourceType: "registry",
+      version: "2.0.0",
+    });
+    await client.removeAgentSkill("agent/id", "qa");
+    await client.getAgentSkillChange("agent/id", "change/id");
+    await client.listAgentWorkflows("agent/id");
+    await client.createAgentWorkflow("agent/id", {
+      workflowKey: "support",
+      source: "export default {}",
+      extension: "ts",
+    });
+    await client.getAgentWorkflow("agent/id", "support flow");
+    await client.validateAgentWorkflow("agent/id", "support flow", {
+      source: "export default {}",
+      extension: "ts",
+    });
+    await client.reloadAgentWorkflow("agent/id", "support flow", "draft-1");
+    await client.saveAndReloadAgentWorkflow("agent/id", "support flow", {
+      source: "export default {}",
+      extension: "ts",
+      expectedRevision: 1,
+    });
+    await client.listAgentWorkflowVersions("agent/id", "support flow");
+    await client.rollbackAgentWorkflow(
+      "agent/id",
+      "support flow",
+      "version/id",
+    );
+    await client.getWorkflowCapabilities("agent/id");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/backend/agents/agent%2Fid",
+      "/api/backend/agents/agent%2Fid",
+      "/api/backend/agents/agent%2Fid/soul",
+      "/api/backend/agents/agent%2Fid/skills",
+      "/api/backend/agents/agent%2Fid/skills/update",
+      "/api/backend/agents/agent%2Fid/skills/remove",
+      "/api/backend/agents/agent%2Fid/skills/changes/change%2Fid",
+      "/api/backend/agents/agent%2Fid/workflows",
+      "/api/backend/agents/agent%2Fid/workflows",
+      "/api/backend/agents/agent%2Fid/workflows/support%20flow",
+      "/api/backend/agents/agent%2Fid/workflows/support%20flow/validate",
+      "/api/backend/agents/agent%2Fid/workflows/support%20flow/reload",
+      "/api/backend/agents/agent%2Fid/workflows/support%20flow/save-and-reload",
+      "/api/backend/agents/agent%2Fid/workflows/support%20flow/versions",
+      "/api/backend/agents/agent%2Fid/workflows/support%20flow/rollback",
+      "/api/backend/agents/agent%2Fid/workflow-capabilities",
+    ]);
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -146,10 +340,14 @@ describe("AdminApiClient", () => {
       tokenStore: store,
       fetcher: fetchMock,
     });
+    const unauthorized = vi.fn();
+    const unsubscribe = client.onUnauthorized(unauthorized);
 
     await expect(client.me()).rejects.toMatchObject({ status: 401 });
 
     expect(store.getToken()).toBeNull();
+    expect(unauthorized).toHaveBeenCalledTimes(1);
+    unsubscribe();
   });
 
   it("sends user mutations to the backend", async () => {
@@ -263,13 +461,22 @@ describe("AdminApiClient", () => {
       soul: "Run homelab tasks",
     };
     fetchMock
-      .mockResolvedValueOnce(okJson([agent]))
+      .mockResolvedValueOnce(
+        okJson({ items: [agent], total: 1, page: 1, pageSize: 20 }),
+      )
       .mockResolvedValueOnce(okJson(agent))
       .mockResolvedValueOnce(
         okJson({ ...agent, status: "ready", initError: null }),
       )
       .mockResolvedValueOnce(okJson({ ...agent, name: "Ops Agent 2" }))
-      .mockResolvedValueOnce(okJson({ ...agent, soul: "Managed soul content" }))
+      .mockResolvedValueOnce(
+        okJson({
+          content: "Managed soul content",
+          missing: false,
+          revision: 2,
+          maxBytes: 65_536,
+        }),
+      )
       .mockResolvedValueOnce(
         okJson({ ...agent, status: "ready", initError: null }),
       );
@@ -279,20 +486,24 @@ describe("AdminApiClient", () => {
       fetcher: fetchMock,
     });
 
-    await expect(client.listAgents()).resolves.toEqual([agent]);
+    await expect(client.listAgents()).resolves.toEqual({
+      items: [agent],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
     await expect(client.getAgent("agent-1")).resolves.toEqual(agent);
     await client.createAgent({
       name: "Ops Agent",
       slug: "ops-agent",
-      modelProvider: "openai",
-      modelSecretRef: "OPENAI_API_KEY",
-      soul: "Run homelab tasks",
+      modelProviderId: "provider-openai",
     });
     await client.updateAgent("agent-1", {
       name: "Ops Agent 2",
-      soul: "Updated soul",
+      modelProviderId: null,
+      expectedRevision: 1,
     });
-    await client.saveAgentSoul("agent-1", "Managed soul content");
+    await client.saveAgentSoul("agent-1", "Managed soul content", 1);
     await client.retryAgentInitialization("agent-1");
 
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -315,9 +526,7 @@ describe("AdminApiClient", () => {
         body: JSON.stringify({
           name: "Ops Agent",
           slug: "ops-agent",
-          modelProvider: "openai",
-          modelSecretRef: "OPENAI_API_KEY",
-          soul: "Run homelab tasks",
+          modelProviderId: "provider-openai",
         }),
       }),
     );
@@ -326,15 +535,22 @@ describe("AdminApiClient", () => {
       "/api/backend/agents/agent-1",
       expect.objectContaining({
         method: "PATCH",
-        body: JSON.stringify({ name: "Ops Agent 2", soul: "Updated soul" }),
+        body: JSON.stringify({
+          name: "Ops Agent 2",
+          modelProviderId: null,
+          expectedRevision: 1,
+        }),
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       5,
       "/api/backend/agents/agent-1/soul",
       expect.objectContaining({
-        method: "PATCH",
-        body: JSON.stringify({ soul: "Managed soul content" }),
+        method: "PUT",
+        body: JSON.stringify({
+          content: "Managed soul content",
+          expectedRevision: 1,
+        }),
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
