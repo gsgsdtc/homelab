@@ -31,13 +31,29 @@ describe("AgentWorkflowRuntimeClient", () => {
     expect(result).toEqual({ status: "succeeded", loadedAt: new Date("2026-07-13T12:00:00.000Z") });
   });
 
-  it("returns failed when runtime is unavailable or not configured", async () => {
+  it("uses the in-process Mastra reload hook when the remote runtime URL is not configured", async () => {
+    global.fetch = jest.fn();
+    const hook = {
+      reloadWorkflow: jest.fn().mockResolvedValue({ status: "succeeded", loadedAt: new Date("2026-07-13T12:00:00.000Z") })
+    };
+    const client = new AgentWorkflowRuntimeClient(config(undefined), hook);
+
+    const result = await client.reloadWorkflow(request());
+
+    expect(hook.reloadWorkflow).toHaveBeenCalledWith(request());
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: "succeeded", loadedAt: new Date("2026-07-13T12:00:00.000Z") });
+  });
+
+  it("returns failed when no reload adapter is configured", async () => {
     const unconfigured = new AgentWorkflowRuntimeClient(config(undefined));
     await expect(unconfigured.reloadWorkflow(request())).resolves.toEqual({
       status: "failed",
-      error: "workflow runtime URL is not configured"
+      error: "workflow reload adapter is not configured"
     });
+  });
 
+  it("returns failed when the remote runtime is unavailable", async () => {
     global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 503 } as any);
     const unavailable = new AgentWorkflowRuntimeClient(config("https://runtime.local"));
     await expect(unavailable.reloadWorkflow(request())).resolves.toEqual({

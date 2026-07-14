@@ -8,6 +8,7 @@ import { AgentWorkflowsController } from "./agent-workflows.controller";
 import { AgentWorkflowsService } from "./agent-workflows.service";
 import { AgentsController } from "./agents.controller";
 import { AgentsService } from "./agents.service";
+import { MastraAgentWorkflowReloader } from "./mastra-agent-workflow-reloader";
 
 @Module({
   imports: [PrismaModule],
@@ -17,6 +18,7 @@ import { AgentsService } from "./agents.service";
     AgentWorkspaceService,
     AgentWorkflowsService,
     AgentWorkflowValidator,
+    MastraAgentWorkflowReloader,
     AgentWorkflowRuntimeClient,
     AgentWorkflowSnapshotService
   ],
