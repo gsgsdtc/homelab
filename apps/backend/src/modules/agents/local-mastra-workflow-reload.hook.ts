@@ -1,13 +1,18 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createHash } from "crypto";
 import { readFile } from "fs/promises";
 import { relative, resolve, sep } from "path";
 import { AgentWorkflowReloader, ReloadWorkflowRequest, ReloadWorkflowResult } from "./agent-workflow-reloader";
+import { MASTRA_WORKFLOW_RUNTIME_REGISTRY, MastraWorkflowRuntimeRegistry } from "./mastra-workflow-runtime.registry";
 
 @Injectable()
 export class LocalMastraWorkflowReloadHook implements AgentWorkflowReloader {
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    @Inject(MASTRA_WORKFLOW_RUNTIME_REGISTRY)
+    private readonly registry: MastraWorkflowRuntimeRegistry
+  ) {}
 
   async reloadWorkflow(request: ReloadWorkflowRequest): Promise<ReloadWorkflowResult> {
     try {
@@ -25,10 +30,14 @@ export class LocalMastraWorkflowReloadHook implements AgentWorkflowReloader {
           error: "workflow reload source hash does not match requested hash"
         };
       }
-      return {
-        status: "succeeded",
-        loadedAt: new Date()
-      };
+      return this.registry.reloadWorkflow({
+        agentId: request.agentId,
+        workflowKey: request.workflowKey,
+        sourceHash: request.sourceHash,
+        relativePath: request.relativePath,
+        sourcePath,
+        extension: request.extension
+      });
     } catch (error) {
       return {
         status: "failed",

@@ -11,6 +11,10 @@ import { AgentsService } from "./agents.service";
 import { MASTRA_AGENT_WORKFLOW_RELOAD_HOOK } from "./agent-workflow-reloader";
 import { LocalMastraWorkflowReloadHook } from "./local-mastra-workflow-reload.hook";
 import { MastraAgentWorkflowReloader } from "./mastra-agent-workflow-reloader";
+import {
+  DynamicImportMastraWorkflowRuntimeRegistry,
+  MASTRA_WORKFLOW_RUNTIME_REGISTRY
+} from "./mastra-workflow-runtime.registry";
 
 @Module({
   imports: [PrismaModule],
@@ -20,6 +24,11 @@ import { MastraAgentWorkflowReloader } from "./mastra-agent-workflow-reloader";
     AgentWorkspaceService,
     AgentWorkflowsService,
     AgentWorkflowValidator,
+    DynamicImportMastraWorkflowRuntimeRegistry,
+    {
+      provide: MASTRA_WORKFLOW_RUNTIME_REGISTRY,
+      useExisting: DynamicImportMastraWorkflowRuntimeRegistry
+    },
     LocalMastraWorkflowReloadHook,
     {
       provide: MASTRA_AGENT_WORKFLOW_RELOAD_HOOK,
