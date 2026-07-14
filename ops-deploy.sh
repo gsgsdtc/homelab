@@ -269,6 +269,13 @@ install_dependencies() {
   CI=true NODE_ENV=development pnpm install --frozen-lockfile
 }
 
+run_database_migrations() {
+  stage "database migration"
+  cd "${SOURCE_DIR}"
+  load_env
+  pnpm --filter @homelab/backend prisma:migrate:deploy
+}
+
 build_apps() {
   stage "build apps"
   cd "${SOURCE_DIR}"
@@ -575,9 +582,10 @@ main() {
     exit 0
   fi
 
-  stop_docker_homelab
   install_dependencies
+  run_database_migrations
   build_apps
+  stop_docker_homelab
   configure_nginx
   restart_services
   wait_for_services
