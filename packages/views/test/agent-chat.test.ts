@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   appendChatAttempt,
+  applyChatRejection,
   applyChatResponse,
   createChatClientMessageId,
   createEmptyAgentChatState,
   getChatConfigurationTarget,
+  type AgentChatRejected,
   validateChatContent,
 } from "../src/admin/agent-chat";
 
@@ -115,6 +117,60 @@ describe("agent chat shared state", () => {
       reply: "world",
       requestId: "req-1",
     });
+  });
+
+  it("terminalizes a provisional bubble when the request is rejected", () => {
+    const queued = appendChatAttempt(
+      createEmptyAgentChatState(),
+      {
+        clientMessageId: "message_attempt_0001",
+        content: "hello",
+        retryOfClientMessageId: null,
+      },
+      "message_attempt_0001",
+    );
+
+    const rejected = applyChatRejection(queued, {
+      requestId: "req-rejected",
+      executionId: null,
+      clientMessageId: "message_attempt_0001",
+      status: "rejected",
+      code: "CHAT_SESSION_EXPIRED",
+      message: "会话已过期",
+      retryable: false,
+    });
+
+    expect(rejected.messages[0]).toMatchObject({
+      status: "rejected",
+      requestId: "req-rejected",
+      rejection: {
+        code: "CHAT_SESSION_EXPIRED",
+        message: "会话已过期",
+      },
+    });
+  });
+
+  it("requires both frozen rejected DTO identifier fields", () => {
+    // @ts-expect-error requestId is required by the frozen DTO.
+    const missingRequestId: AgentChatRejected = {
+      executionId: null,
+      clientMessageId: null,
+      status: "rejected",
+      code: "CHAT_SESSION_BUSY",
+      message: "busy",
+      retryable: false,
+    };
+    // @ts-expect-error clientMessageId is required even when its value is null.
+    const missingClientMessageId: AgentChatRejected = {
+      requestId: "req-rejected",
+      executionId: null,
+      status: "rejected",
+      code: "CHAT_SESSION_BUSY",
+      message: "busy",
+      retryable: false,
+    };
+
+    expect([missingRequestId, missingClientMessageId]).toHaveLength(2);
   });
 
   it("routes configuration failures to the matching admin area", () => {

@@ -106,6 +106,9 @@ describe("AgentChatPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
 
     expect(await screen.findByText("配置正常")).toBeInTheDocument();
+    expect(
+      screen.getByRole("status", { name: "消息状态" }),
+    ).toHaveTextContent("回复已完成");
     expect(screen.getAllByText("检查当前配置")).toHaveLength(1);
     expect(input).toBeEnabled();
   });
@@ -163,16 +166,60 @@ describe("AgentChatPage", () => {
     await userEvent.type(input, "检查当前配置");
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(
-      await screen.findByText("发送结果未知，请继续确认"),
-    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("status", { name: "消息状态" }),
+      ).toHaveTextContent("发送结果未知，请继续确认"),
+    );
+    expect(input).toBeDisabled();
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "继续确认" }));
     expect(await screen.findByText("原请求已完成")).toBeInTheDocument();
+    expect(input).toBeEnabled();
     expect(mocks.api.sendAgentChatMessage).toHaveBeenCalledTimes(2);
     expect(mocks.api.sendAgentChatMessage.mock.calls[1][2]).toEqual(
       mocks.api.sendAgentChatMessage.mock.calls[0][2],
     );
     expect(screen.getAllByText("检查当前配置")).toHaveLength(1);
+  });
+
+  it("keeps the composer locked after automatic confirmation is exhausted", async () => {
+    mockReady();
+    mocks.api.sendAgentChatMessage.mockImplementation(
+      (
+        _agentId: string,
+        _sessionId: string,
+        payload: { clientMessageId: string },
+      ) =>
+        Promise.resolve({
+          requestId: "req-pending",
+          executionId: "exec-pending",
+          clientMessageId: payload.clientMessageId,
+          logicalMessageId: payload.clientMessageId,
+          retryOfClientMessageId: null,
+          status: "in_progress",
+          acceptedAt: "2026-07-14T00:00:00Z",
+          retryAfterMs: 0,
+          replayed: true,
+        }),
+    );
+
+    render(<AgentChatPage />);
+    const input = await getReadyInput();
+    await userEvent.type(input, "keep confirming");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("status", { name: "消息状态" }),
+      ).toHaveTextContent("发送结果未知，请继续确认"),
+    );
+    expect(mocks.api.sendAgentChatMessage).toHaveBeenCalledTimes(66);
+    expect(input).toBeDisabled();
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "继续确认" }),
+    ).toBeEnabled();
   });
 
   it("retries a retryable terminal failure in the same bubble", async () => {
@@ -227,7 +274,9 @@ describe("AgentChatPage", () => {
     await userEvent.type(input, "检查当前配置");
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(await screen.findByText("模型响应超时")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("status", { name: "消息状态" }),
+    ).toHaveTextContent("消息发送失败：模型响应超时");
     await userEvent.click(screen.getByRole("button", { name: "重新执行" }));
     expect(await screen.findByText("重试成功")).toBeInTheDocument();
     expect(screen.getAllByText("检查当前配置")).toHaveLength(1);
@@ -236,6 +285,81 @@ describe("AgentChatPage", () => {
       retryOfClientMessageId:
         mocks.api.sendAgentChatMessage.mock.calls[0][2].clientMessageId,
     });
+  });
+
+  it("ends the session for a terminal CHAT_CONTEXT_LIMIT failure", async () => {
+    mockReady();
+    mocks.api.sendAgentChatMessage.mockImplementation(
+      (
+        _agentId: string,
+        _sessionId: string,
+        payload: { clientMessageId: string },
+      ) =>
+        Promise.resolve({
+          requestId: "req-context",
+          executionId: "exec-context",
+          clientMessageId: payload.clientMessageId,
+          logicalMessageId: payload.clientMessageId,
+          retryOfClientMessageId: null,
+          status: "failed",
+          code: "CHAT_CONTEXT_LIMIT",
+          message: "上下文已达到上限",
+          retryable: false,
+          acceptedAt: "2026-07-14T00:00:00Z",
+          completedAt: "2026-07-14T00:00:01Z",
+          replayed: false,
+        }),
+    );
+
+    render(<AgentChatPage />);
+    const input = await getReadyInput();
+    await userEvent.type(input, "continue");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(
+      await screen.findByRole("button", { name: "开始新会话" }),
+    ).toBeInTheDocument();
+    expect(input).toBeDisabled();
+    expect(
+      screen.getByRole("status", { name: "消息状态" }),
+    ).toHaveTextContent("消息发送失败：上下文已达到上限");
+  });
+
+  it("keeps MODEL_OUTPUT_TOO_LARGE terminal and hides retry and partial reply", async () => {
+    mockReady();
+    mocks.api.sendAgentChatMessage.mockImplementation(
+      (
+        _agentId: string,
+        _sessionId: string,
+        payload: { clientMessageId: string },
+      ) =>
+        Promise.resolve({
+          requestId: "req-output",
+          executionId: "exec-output",
+          clientMessageId: payload.clientMessageId,
+          logicalMessageId: payload.clientMessageId,
+          retryOfClientMessageId: null,
+          status: "failed",
+          code: "MODEL_OUTPUT_TOO_LARGE",
+          message: "模型输出超过上限",
+          retryable: false,
+          acceptedAt: "2026-07-14T00:00:00Z",
+          completedAt: "2026-07-14T00:00:01Z",
+          replayed: false,
+        }),
+    );
+
+    render(<AgentChatPage />);
+    const input = await getReadyInput();
+    await userEvent.type(input, "large output");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(
+      await screen.findByRole("status", { name: "消息状态" }),
+    ).toHaveTextContent("消息发送失败：模型输出超过上限");
+    expect(screen.queryByRole("button", { name: "重新执行" })).toBeNull();
+    expect(screen.queryByText(/部分回复/)).toBeNull();
+    expect(input).toBeEnabled();
   });
 
   it("keeps an over-limit draft and exposes validation feedback", async () => {
@@ -256,27 +380,118 @@ describe("AgentChatPage", () => {
     mocks.api.createAgentChatSession
       .mockResolvedValueOnce(session)
       .mockResolvedValueOnce({ ...session, sessionId: "session-b" });
-    mocks.api.sendAgentChatMessage.mockRejectedValue({
-      name: "ApiError",
-      status: 410,
-      details: {
-        status: "rejected",
-        code: "CHAT_SESSION_EXPIRED",
-        message: "会话已过期",
-      },
-    });
+    mocks.api.sendAgentChatMessage.mockImplementation(
+      (
+        _agentId: string,
+        _sessionId: string,
+        payload: { clientMessageId: string },
+      ) =>
+        Promise.reject({
+          name: "ApiError",
+          status: 410,
+          details: {
+            requestId: "req-expired",
+            executionId: null,
+            clientMessageId: payload.clientMessageId,
+            status: "rejected",
+            code: "CHAT_SESSION_EXPIRED",
+            message: "会话已过期",
+            retryable: false,
+          },
+        }),
+    );
 
     render(<AgentChatPage />);
     const input = await getReadyInput();
     await userEvent.type(input, "hello");
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("会话已过期");
+    expect(
+      await screen.findByRole("status", { name: "会话状态" }),
+    ).toHaveTextContent("会话已过期");
+    expect(screen.queryByText("回复中...")).toBeNull();
+    expect(
+      screen.getByRole("status", { name: "消息状态" }),
+    ).toHaveTextContent("请求未执行：会话已过期");
     expect(input).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "开始新会话" }));
     await waitFor(() => expect(input).toBeEnabled());
+    expect(
+      screen.getByRole("status", { name: "聊天页面状态" }),
+    ).toHaveTextContent("新会话已创建，可以继续发送消息");
     expect(screen.queryByText("hello")).not.toBeInTheDocument();
     expect(mocks.api.createAgentChatSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("terminalizes the provisional bubble for a configuration rejection", async () => {
+    mockReady();
+    mocks.api.sendAgentChatMessage.mockImplementation(
+      (
+        _agentId: string,
+        _sessionId: string,
+        payload: { clientMessageId: string },
+      ) =>
+        Promise.reject({
+          status: 409,
+          details: {
+            requestId: "req-config",
+            executionId: null,
+            clientMessageId: payload.clientMessageId,
+            status: "rejected",
+            code: "WORKFLOW_NOT_ACTIVE",
+            message: "默认 Workflow 未生效",
+            retryable: false,
+          },
+        }),
+    );
+
+    render(<AgentChatPage />);
+    const input = await getReadyInput();
+    await userEvent.type(input, "check workflow");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "默认 Workflow 未生效",
+    );
+    expect(screen.queryByText("回复中...")).toBeNull();
+    expect(
+      screen.getByRole("status", { name: "消息状态" }),
+    ).toHaveTextContent("请求未执行：默认 Workflow 未生效");
+    expect(input).toBeDisabled();
+  });
+
+  it("terminalizes a general rejection and re-enables the composer", async () => {
+    mockReady();
+    mocks.api.sendAgentChatMessage.mockImplementation(
+      (
+        _agentId: string,
+        _sessionId: string,
+        payload: { clientMessageId: string },
+      ) =>
+        Promise.reject({
+          status: 409,
+          details: {
+            requestId: "req-busy",
+            executionId: null,
+            clientMessageId: payload.clientMessageId,
+            status: "rejected",
+            code: "CHAT_SESSION_BUSY",
+            message: "当前会话正在处理另一条消息",
+            retryable: false,
+          },
+        }),
+    );
+
+    render(<AgentChatPage />);
+    const input = await getReadyInput();
+    await userEvent.type(input, "another message");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(
+      await screen.findByRole("status", { name: "消息状态" }),
+    ).toHaveTextContent("请求未执行：当前会话正在处理另一条消息");
+    expect(screen.queryByText("回复中...")).toBeNull();
+    expect(input).toBeEnabled();
   });
 
   it("automatically confirms an in-progress replay until it succeeds", async () => {

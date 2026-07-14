@@ -69,9 +69,9 @@ export type AgentChatMessageResponse =
   | AgentChatMessageFailed;
 
 export interface AgentChatRejected {
-  requestId?: string;
+  requestId: string;
   executionId: null;
-  clientMessageId?: string | null;
+  clientMessageId: string | null;
   status: "rejected";
   code: string;
   message: string;
@@ -79,7 +79,12 @@ export interface AgentChatRejected {
 }
 
 export type AgentChatBubbleStatus =
-  "sending" | "confirming" | "result_unknown" | "succeeded" | "failed";
+  | "sending"
+  | "confirming"
+  | "result_unknown"
+  | "succeeded"
+  | "failed"
+  | "rejected";
 
 export interface AgentChatAttempt {
   payload: AgentChatMessageRequest;
@@ -96,6 +101,7 @@ export interface AgentChatBubble {
   requestId?: string;
   executionId?: string;
   failure?: AgentChatMessageFailed;
+  rejection?: AgentChatRejected;
 }
 
 export interface AgentChatState {
@@ -158,8 +164,31 @@ export function appendChatAttempt(
     status: "sending",
     attempts: [...message.attempts, { payload }],
     failure: undefined,
+    rejection: undefined,
     requestId: undefined,
     executionId: undefined,
+  }));
+}
+
+export function applyChatRejection(
+  state: AgentChatState,
+  rejection: AgentChatRejected,
+  fallbackClientMessageId: string | null = rejection.clientMessageId,
+): AgentChatState {
+  const clientMessageId = rejection.clientMessageId ?? fallbackClientMessageId;
+  const index = state.messages.findIndex(
+    (message) => message.activeClientMessageId === clientMessageId,
+  );
+  if (index === -1) {
+    return state;
+  }
+  return updateMessage(state, index, (message) => ({
+    ...message,
+    status: "rejected",
+    requestId: rejection.requestId,
+    executionId: undefined,
+    failure: undefined,
+    rejection,
   }));
 }
 

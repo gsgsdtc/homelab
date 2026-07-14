@@ -3,6 +3,7 @@
 import {
   ApiError,
   appendChatAttempt,
+  applyChatRejection,
   applyChatResponse,
   createChatClientMessageId,
   createEmptyAgentChatState,
@@ -120,6 +121,9 @@ export default function AgentChatPage() {
           chatRef.current = empty;
           setDraft("");
         }
+        setPageMessage(
+          clearTranscript ? "新会话已创建，可以继续发送消息" : "",
+        );
         setPhase("ready");
       } catch (error) {
         if (!mountedRef.current) return;
@@ -190,13 +194,14 @@ export default function AgentChatPage() {
           return;
         }
         setBusy(false);
-        if (
-          response.status === "failed" &&
-          configurationCodes.has(response.code)
-        ) {
-          setPhase("blocked");
+        if (response.status === "failed") {
           setPageCode(response.code);
           setPageMessage(response.message);
+          if (sessionEndedCodes.has(response.code)) {
+            setPhase("session_ended");
+          } else if (configurationCodes.has(response.code)) {
+            setPhase("blocked");
+          }
         }
       } catch (error) {
         if (!mountedRef.current) return;
@@ -216,6 +221,9 @@ export default function AgentChatPage() {
           );
           return;
         }
+        updateChat((current) =>
+          applyChatRejection(current, rejected, payload.clientMessageId),
+        );
         if (sessionEndedCodes.has(rejected.code)) {
           setPhase("session_ended");
           setPageCode(rejected.code);
@@ -250,7 +258,9 @@ export default function AgentChatPage() {
     draft.length > 0 ||
     chat.messages.some(
       (message) =>
-        message.status === "succeeded" || message.status === "failed",
+        message.status === "succeeded" ||
+        message.status === "failed" ||
+        message.status === "rejected",
     );
 
   useEffect(() => {
@@ -318,7 +328,14 @@ export default function AgentChatPage() {
   const configTarget = pageCode
     ? getChatConfigurationTarget(pageCode, agentId)
     : null;
-  const canCompose = phase === "ready" && Boolean(session) && !busy;
+  const hasUnresolvedAttempt = chat.messages.some(
+    (message) =>
+      message.status === "sending" ||
+      message.status === "confirming" ||
+      message.status === "result_unknown",
+  );
+  const canCompose =
+    phase === "ready" && Boolean(session) && !busy && !hasUnresolvedAttempt;
 
   return (
     <AuthShell>
@@ -340,8 +357,14 @@ export default function AgentChatPage() {
         </button>
       </section>
 
-      <div className="chat-live-region" aria-live="polite" aria-atomic="true">
-        {getLiveStatus(phase, busy, pageMessage)}
+      <div
+        className="chat-live-region"
+        role="status"
+        aria-label="聊天页面状态"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {getLiveStatus(phase, busy, pageMessage, chat.messages.at(-1))}
       </div>
 
       {phase === "loading" ? (
@@ -381,7 +404,11 @@ export default function AgentChatPage() {
       ) : null}
 
       {phase === "session_ended" ? (
-        <div className="notice chat-blocked" role="status">
+        <div
+          className="notice chat-blocked"
+          role="status"
+          aria-label="会话状态"
+        >
           <div>
             <strong>{pageMessage}</strong>
             <p>旧对话已转为只读，可创建一个新的临时会话继续。</p>
@@ -507,7 +534,13 @@ function ChatBubble({
         <span className="chat-speaker">你</span>
         <p>{message.content}</p>
       </div>
-      <div className="chat-result">
+      <div
+        className="chat-result"
+        role="status"
+        aria-label="消息状态"
+        aria-live="polite"
+        aria-atomic="true"
+      >
         {message.status === "sending" ? <span>回复中...</span> : null}
         {message.status === "confirming" ? (
           <span>正在确认发送结果...</span>
@@ -527,7 +560,9 @@ function ChatBubble({
         ) : null}
         {message.status === "failed" && message.failure ? (
           <>
-            <span className="error-text">{message.failure.message}</span>
+            <span className="error-text">
+              消息发送失败：{message.failure.message}
+            </span>
             {canRetry ? (
               <button
                 className="ghost-button inline-ghost"
@@ -541,6 +576,12 @@ function ChatBubble({
             ) : null}
           </>
         ) : null}
+        {message.status === "rejected" && message.rejection ? (
+          <span className="error-text">
+            请求未执行：{message.rejection.message}
+          </span>
+        ) : null}
+        {message.status === "succeeded" ? <span>回复已完成</span> : null}
         {message.requestId ? (
           <code className="chat-request-id">
             requestId: {message.requestId}
@@ -567,9 +608,17 @@ function getRejected(error: unknown): AgentChatRejected | null {
   if (
     !details ||
     typeof details !== "object" ||
+    typeof (details as { requestId?: unknown }).requestId !== "string" ||
+    (details as { executionId?: unknown }).executionId !== null ||
+    !(
+      (details as { clientMessageId?: unknown }).clientMessageId === null ||
+      typeof (details as { clientMessageId?: unknown }).clientMessageId ===
+        "string"
+    ) ||
     (details as { status?: unknown }).status !== "rejected" ||
     typeof (details as { code?: unknown }).code !== "string" ||
-    typeof (details as { message?: unknown }).message !== "string"
+    typeof (details as { message?: unknown }).message !== "string" ||
+    (details as { retryable?: unknown }).retryable !== false
   ) {
     return null;
   }
@@ -604,9 +653,24 @@ function handlePageError(
   handlers.onOther(error instanceof Error ? error.message : "");
 }
 
-function getLiveStatus(phase: PagePhase, busy: boolean, message: string) {
-  if (busy) return "正在处理消息";
-  if (phase === "ready") return "聊天已就绪";
+function getLiveStatus(
+  phase: PagePhase,
+  busy: boolean,
+  message: string,
+  latestMessage?: AgentChatBubble,
+) {
   if (phase === "loading") return "正在初始化聊天";
-  return message;
+  if (phase !== "ready") return message;
+  if (busy) return "正在处理消息";
+  if (latestMessage?.status === "result_unknown") {
+    return "发送结果未知，请继续确认";
+  }
+  if (latestMessage?.status === "failed" && latestMessage.failure) {
+    return `消息发送失败：${latestMessage.failure.message}`;
+  }
+  if (latestMessage?.status === "rejected" && latestMessage.rejection) {
+    return `请求未执行：${latestMessage.rejection.message}`;
+  }
+  if (latestMessage?.status === "succeeded") return "Agent 回复已完成";
+  return message || "聊天已就绪";
 }
