@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { Agent } from "@prisma/client";
 import { createHash } from "crypto";
+import { ReloadWorkflowResult } from "./agent-workflow-reloader";
 import { AgentWorkflowRuntimeClient } from "./agent-workflow-runtime.client";
 import { AgentWorkflowValidator } from "./agent-workflow-validator.service";
 import { AgentWorkspaceService } from "./agent-workspace.service";
@@ -135,7 +136,7 @@ export class AgentWorkflowsService {
       where: { id: workflow.id },
       data: { reloadStatus: "loading", reloadError: null }
     });
-    const result = await this.runtime.reloadWorkflow({
+    const result: ReloadWorkflowResult = await this.runtime.reloadWorkflow({
       agentId,
       workflowKey,
       sourceHash: workflow.draftHash,

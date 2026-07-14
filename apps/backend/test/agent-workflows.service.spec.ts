@@ -157,6 +157,48 @@ describe("AgentWorkflowsService", () => {
     expect(result.reloadStatus).toBe("succeeded");
   });
 
+  it("promotes draft through the in-process Mastra reload adapter without a remote runtime URL", async () => {
+    const item = workflow({ draftHash: hashOf(validSource("support-triage")), activeHash: "active-v1" });
+    const hook = {
+      reloadWorkflow: jest.fn().mockResolvedValue({ status: "succeeded", loadedAt: now })
+    };
+    const inProcessRuntime = new AgentWorkflowRuntimeClient(config(undefined), hook);
+    prisma.agentWorkflow.findFirst.mockResolvedValueOnce(item).mockResolvedValueOnce({
+      ...item,
+      activeHash: item.draftHash,
+      reloadStatus: "succeeded",
+      reloadError: null,
+      loadedAt: now
+    });
+    prisma.agentWorkflowVersion.create.mockResolvedValue({
+      id: "version-2",
+      workflowId: item.id,
+      sourceHash: item.draftHash,
+      source: validSource("support-triage")
+    });
+    workspaces.readWorkflowSource.mockResolvedValue(validSource("support-triage"));
+    const service = new AgentWorkflowsService(prisma, workspaces, validator, inProcessRuntime);
+
+    const result = await service.reload("agent-1", "support-triage", { expectedDraftHash: item.draftHash });
+
+    expect(hook.reloadWorkflow).toHaveBeenCalledWith({
+      agentId: "agent-1",
+      workflowKey: "support-triage",
+      sourceHash: item.draftHash,
+      relativePath: item.relativePath,
+      extension: "ts"
+    });
+    expect(prisma.agentWorkflow.updateMany).toHaveBeenCalledWith({
+      where: { id: item.id, draftHash: item.draftHash, relativePath: item.relativePath },
+      data: expect.objectContaining({
+        activeHash: item.draftHash,
+        reloadStatus: "succeeded"
+      })
+    });
+    expect(result.activeHash).toBe(item.draftHash);
+    expect(result.reloadStatus).toBe("succeeded");
+  });
+
   it("does not promote when the draft changes while runtime reload is in flight", async () => {
     const item = workflow({ draftHash: hashOf(validSource("support-triage", "v2")), activeHash: "active-v1" });
     prisma.agentWorkflow.findFirst.mockResolvedValue(item);
@@ -438,4 +480,18 @@ function validSource(workflowKey: string, marker = "v2") {
 
 function hashOf(source: string) {
   return require("crypto").createHash("sha256").update(source, "utf8").digest("hex");
+}
+
+function config(runtimeUrl?: string) {
+  return {
+    get: jest.fn((key: string, defaultValue?: unknown) => {
+      if (key === "HOMELAB_WORKFLOW_RUNTIME_URL") {
+        return runtimeUrl;
+      }
+      if (key === "HOMELAB_WORKFLOW_RELOAD_TIMEOUT_MS") {
+        return 30_000;
+      }
+      return defaultValue;
+    })
+  } as any;
 }

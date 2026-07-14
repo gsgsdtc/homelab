@@ -1,30 +1,26 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-
-export interface ReloadWorkflowRequest {
-  agentId: string;
-  workflowKey: string;
-  sourceHash: string;
-  relativePath: string;
-  extension: "ts" | "js";
-}
-
-export interface ReloadWorkflowResult {
-  status: "succeeded" | "failed";
-  loadedAt?: Date;
-  error?: string;
-}
+import { AgentWorkflowReloader, ReloadWorkflowRequest, ReloadWorkflowResult } from "./agent-workflow-reloader";
+import { MastraAgentWorkflowReloader } from "./mastra-agent-workflow-reloader";
 
 @Injectable()
 export class AgentWorkflowRuntimeClient {
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    @Optional()
+    @Inject(MastraAgentWorkflowReloader)
+    private readonly inProcessReloader?: AgentWorkflowReloader
+  ) {}
 
   async reloadWorkflow(request: ReloadWorkflowRequest): Promise<ReloadWorkflowResult> {
     const runtimeUrl = this.config.get<string>("HOMELAB_WORKFLOW_RUNTIME_URL");
     if (!runtimeUrl) {
+      if (this.inProcessReloader) {
+        return this.inProcessReloader.reloadWorkflow(request);
+      }
       return {
         status: "failed",
-        error: "workflow runtime URL is not configured"
+        error: "workflow reload adapter is not configured"
       };
     }
     const controller = new AbortController();
