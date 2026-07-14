@@ -61,5 +61,10 @@ export interface AgentSkillChangeResult {
   previousConfigVersion: string | null;
   activeConfigVersion: string | null;
   stagedConfigVersion: string | null;
+  sequenceIndex: number;
+  terminal: boolean;
+  finishedAt: Date | null;
+  persistedConfigVersion: string | null;
+  runtimeLoadedVersion: string | null;
   effectiveFor: "next_task";
 }

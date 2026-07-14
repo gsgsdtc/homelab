@@ -1,7 +1,8 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Agent } from "@prisma/client";
 import { AgentSkillReloadStatusValue } from "./agent-skill-types";
+import { Gfu29TestControlService } from "./gfu29-test-control.service";
 
 export interface RuntimeReloadResult {
   reloadStatus: AgentSkillReloadStatusValue;
@@ -10,9 +11,13 @@ export interface RuntimeReloadResult {
 
 @Injectable()
 export class RuntimeReloadClient {
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    @Optional() private readonly testControl?: Gfu29TestControlService
+  ) {}
 
   async reloadSkills(agent: Pick<Agent, "id" | "workspacePath">, activeConfigVersion: string): Promise<RuntimeReloadResult> {
+    if (this.testControl?.enabled()) return this.testControl.reloadSkills(activeConfigVersion);
     if (!this.isTestReloadInjectionEnabled()) {
       return { reloadStatus: "pending_restart", effectiveFor: "next_task" };
     }

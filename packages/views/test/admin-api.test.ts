@@ -153,7 +153,7 @@ describe("AdminApiClient", () => {
     await client.saveAgentWorkflowDraft("agent/id", "support flow", {
       source: "export default {}",
       extension: "ts",
-      expectedRevision: "rev-1",
+      expectedRevision: 1,
     });
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
@@ -203,7 +203,7 @@ describe("AdminApiClient", () => {
     await client.saveAndReloadAgentWorkflow("agent/id", "support flow", {
       source: "export default {}",
       extension: "ts",
-      expectedRevision: "draft-1",
+      expectedRevision: 1,
     });
     await client.listAgentWorkflowVersions("agent/id", "support flow");
     await client.rollbackAgentWorkflow(

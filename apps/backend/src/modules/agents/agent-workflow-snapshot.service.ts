@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, Optional } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { Gfu29TestControlService } from "./gfu29-test-control.service";
 
 export interface AgentWorkflowClaimSnapshot {
   agentWorkflowId: string;
@@ -10,7 +11,10 @@ export interface AgentWorkflowClaimSnapshot {
 
 @Injectable()
 export class AgentWorkflowSnapshotService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly testControl?: Gfu29TestControlService
+  ) {}
 
   async getClaimSnapshot(agentId: string, workflowKey = "default"): Promise<AgentWorkflowClaimSnapshot> {
     const workflow = await this.prisma.agentWorkflow.findFirst({
@@ -32,11 +36,13 @@ export class AgentWorkflowSnapshotService {
     if (!version) {
       throw new BadRequestException("active workflow version is unavailable");
     }
-    return {
+    const snapshot = {
       agentWorkflowId: workflow.id,
       workflowKey: workflow.workflowKey,
       workflowHash: workflow.activeHash,
       workflowVersionId: version.id
     };
+    await this.testControl?.holdWorkflowClaim(snapshot);
+    return snapshot;
   }
 }

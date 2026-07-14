@@ -65,7 +65,12 @@ export interface AgentMutationPayload {
   name?: string;
   slug?: string;
   modelProviderId?: string | null;
-  expectedRevision?: number;
+}
+
+export interface AgentUpdatePayload {
+  name?: string;
+  modelProviderId?: string | null;
+  expectedRevision: number;
 }
 
 export interface AgentSoul {
@@ -104,6 +109,9 @@ export interface AgentSkill {
 
 export interface AgentSkillState {
   agentId: string;
+  activeConfigVersion?: string | null;
+  previousConfigVersion?: string | null;
+  stagedConfigVersion?: string | null;
   changeStatus: AgentSkillChangeStatus;
   reloadStatus: AgentSkillReloadStatus;
   auditStatus: AgentSkillAuditStatus;
@@ -123,24 +131,31 @@ export interface AgentSkillChange extends Omit<
   operation: "install" | "update" | "remove";
   terminal?: boolean;
   finishedAt?: string | null;
+  previousConfigVersion?: string | null;
+  activeConfigVersion?: string | null;
+  stagedConfigVersion?: string | null;
+  sequenceIndex?: number;
+  persistedConfigVersion?: string | null;
+  runtimeLoadedVersion?: string | null;
+  effectiveFor?: "next_task";
 }
 
 export interface SkillCatalogSource {
   id: string;
-  name: string;
+  label: string;
   sourceType: AgentSkillSourceType;
 }
 
 export interface SkillCatalogSkill {
-  id: string;
+  skillId: string;
   name: string;
-  description?: string;
+  description?: string | null;
 }
 
 export interface SkillCatalogVersion {
   version: string;
   immutableRef: string;
-  isLatest?: boolean;
+  createdAt: string;
 }
 
 export type WorkflowReloadStatus = "draft" | "loading" | "succeeded" | "failed";
@@ -148,10 +163,9 @@ export interface AgentWorkflow {
   workflowKey: string;
   filePath?: string;
   source?: string;
-  extension?: "ts" | "js";
   draftHash: string | null;
   activeHash: string | null;
-  revision: string | number;
+  revision: number;
   reloadStatus: WorkflowReloadStatus | string;
   loadedAt?: string | null;
   updatedAt?: string;
@@ -167,9 +181,10 @@ export interface AgentWorkflowVersion {
 }
 
 export interface WorkflowCapabilities {
-  maxSourceBytes: number;
+  sourceMaxBytes: number;
   reloadTimeoutMs: number;
-  allowedExtensions: Array<"ts" | "js">;
+  historyLimit: number;
+  extensions: Array<"ts" | "js">;
 }
 
 export type ModelProviderType = "OPENAI_COMPATIBLE";
@@ -446,7 +461,7 @@ export class AdminApiClient {
     });
   }
 
-  updateAgent(id: string, payload: AgentMutationPayload) {
+  updateAgent(id: string, payload: AgentUpdatePayload) {
     return this.request<Agent>(`/agents/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
@@ -579,7 +594,7 @@ export class AdminApiClient {
     payload: {
       source: string;
       extension: "ts" | "js";
-      expectedRevision?: string | number;
+      expectedRevision: number;
     },
   ) {
     return this.request<AgentWorkflow>(
@@ -593,7 +608,12 @@ export class AdminApiClient {
     workflowKey: string,
     payload: { source: string; extension: "ts" | "js" },
   ) {
-    return this.request<{ valid: boolean; errors?: string[] }>(
+    return this.request<{
+      workflowKey: string;
+      valid: boolean;
+      sourceHash: string;
+      errors?: string[];
+    }>(
       `/agents/${encodeURIComponent(agentId)}/workflows/${encodeURIComponent(workflowKey)}/validate`,
       { method: "POST", body: JSON.stringify(payload) },
     );
@@ -616,7 +636,7 @@ export class AdminApiClient {
     payload: {
       source: string;
       extension: "ts" | "js";
-      expectedRevision?: string | number;
+      expectedRevision: number;
     },
   ) {
     return this.request<AgentWorkflow>(

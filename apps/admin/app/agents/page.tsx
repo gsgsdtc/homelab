@@ -952,7 +952,7 @@ function SkillInstallDialog({
   async function submit(event: FormEvent) {
     event.preventDefault();
     const source = sources.find((item) => item.id === sourceId);
-    const skill = skills.find((item) => item.id === skillId);
+    const skill = skills.find((item) => item.skillId === skillId);
     if (!source || !skill || !version) return;
     setBusy(true);
     try {
@@ -995,7 +995,7 @@ function SkillInstallDialog({
             <option value="">请选择来源</option>
             {sources.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.name}
+                {item.label}
               </option>
             ))}
           </select>
@@ -1013,7 +1013,7 @@ function SkillInstallDialog({
           >
             <option value="">请选择 Skill</option>
             {skills.map((item) => (
-              <option key={item.id} value={item.id}>
+              <option key={item.skillId} value={item.skillId}>
                 {item.name}
               </option>
             ))}
@@ -1031,7 +1031,6 @@ function SkillInstallDialog({
             {versions.map((item) => (
               <option key={item.immutableRef} value={item.version}>
                 {item.version}
-                {item.isLatest ? "（最新）" : ""}
               </option>
             ))}
           </select>
@@ -1151,27 +1150,51 @@ function WorkflowPanel({ agent }: { agent: Agent }) {
     setBusy(true);
     setMessage("");
     try {
-      const saved = await api.saveAgentWorkflowDraft(
-        agent.id,
-        editing.workflowKey,
-        {
-          source,
-          extension: editing.extension ?? "ts",
-          expectedRevision: editing.revision,
-        },
-      );
+      const payload = {
+        source,
+        extension: workflowExtension(editing),
+        expectedRevision: editing.revision,
+      };
       const next = reload
-        ? await api.reloadAgentWorkflow(
+        ? await api.saveAndReloadAgentWorkflow(
             agent.id,
             editing.workflowKey,
-            saved.draftHash ?? undefined,
+            payload,
           )
-        : saved;
+        : await api.saveAgentWorkflowDraft(
+            agent.id,
+            editing.workflowKey,
+            payload,
+          );
       setEditing({ ...next, source });
       setMessage(reload ? "Workflow 已保存并 reload" : "Workflow 草稿已保存");
       await load();
     } catch {
       setMessage("Workflow 保存失败，草稿内容已保留");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reloadCurrentDraft() {
+    if (!editing?.draftHash) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const next = await api.reloadAgentWorkflow(
+        agent.id,
+        editing.workflowKey,
+        editing.draftHash,
+      );
+      setEditing({ ...next, source });
+      setMessage(
+        next.reloadStatus === "succeeded"
+          ? "Workflow reload 已完成"
+          : "Workflow reload 失败，active 版本未变",
+      );
+      await load();
+    } catch {
+      setMessage("Workflow reload 失败，active 版本未变");
     } finally {
       setBusy(false);
     }
@@ -1245,7 +1268,7 @@ function WorkflowPanel({ agent }: { agent: Agent }) {
               Workflow 源码
               <textarea
                 aria-label="Workflow 源码"
-                disabled={busy || agent.status !== "ready"}
+                disabled={busy}
                 onChange={(event) => setSource(event.target.value)}
                 rows={16}
                 value={source}
@@ -1256,20 +1279,37 @@ function WorkflowPanel({ agent }: { agent: Agent }) {
                 className="ghost-button inline-ghost"
                 disabled={busy}
                 onClick={async () => {
-                  const result = await api.validateAgentWorkflow(
-                    agent.id,
-                    editing.workflowKey,
-                    { source, extension: editing.extension ?? "ts" },
-                  );
-                  setMessage(
-                    result.valid
-                      ? "校验通过"
-                      : (result.errors?.join("；") ?? "校验失败"),
-                  );
+                  try {
+                    const result = await api.validateAgentWorkflow(
+                      agent.id,
+                      editing.workflowKey,
+                      { source, extension: workflowExtension(editing) },
+                    );
+                    setMessage(
+                      result.valid
+                        ? "校验通过"
+                        : (result.errors?.join("；") ?? "校验失败"),
+                    );
+                  } catch {
+                    setMessage("Workflow 校验失败，请检查源码");
+                  }
                 }}
                 type="button"
               >
                 校验
+              </button>
+              <button
+                className="ghost-button inline-ghost"
+                disabled={
+                  busy ||
+                  agent.status !== "ready" ||
+                  !editing.draftHash ||
+                  editing.draftHash === editing.activeHash
+                }
+                onClick={() => void reloadCurrentDraft()}
+                type="button"
+              >
+                reload 当前 draft
               </button>
               <button
                 disabled={
@@ -1633,6 +1673,9 @@ function formatDate(value?: string) {
 }
 function shortHash(value: string | null) {
   return value ? value.slice(0, 8) : "-";
+}
+function workflowExtension(workflow: AgentWorkflow): "ts" | "js" {
+  return workflow.filePath?.endsWith(".js") ? "js" : "ts";
 }
 function createIdempotencyKey() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto

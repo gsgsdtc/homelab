@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Param, Patch, Post, Put, Query, UseGuards } from "@nestjs/common";
 import { UserRole } from "@prisma/client";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { RolesGuard } from "../../common/guards/roles.guard";
@@ -15,8 +15,12 @@ export class AgentsController {
   constructor(private readonly agents: AgentsService) {}
 
   @Get()
-  list() {
-    return this.agents.list();
+  list(@Query("query") query?: string, @Query("page") page?: string, @Query("pageSize") pageSize?: string) {
+    return this.agents.list({
+      query,
+      page: page === undefined ? undefined : Number(page),
+      pageSize: pageSize === undefined ? undefined : Number(pageSize)
+    });
   }
 
   @Get(":id")
@@ -25,8 +29,8 @@ export class AgentsController {
   }
 
   @Post()
-  create(@Body() dto: CreateAgentDto) {
-    return this.agents.create(dto);
+  create(@Body() dto: CreateAgentDto, @Headers("idempotency-key") idempotencyKey?: string) {
+    return this.agents.create(dto, idempotencyKey?.trim() || undefined);
   }
 
   @Patch(":id")
@@ -34,7 +38,12 @@ export class AgentsController {
     return this.agents.update(id, dto);
   }
 
-  @Patch(":id/soul")
+  @Get(":id/soul")
+  getSoul(@Param("id") id: string) {
+    return this.agents.getSoul(id);
+  }
+
+  @Put(":id/soul")
   saveSoul(@Param("id") id: string, @Body() dto: SaveAgentSoulDto) {
     return this.agents.saveSoul(id, dto);
   }

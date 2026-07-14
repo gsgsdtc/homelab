@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
     retryAgentInitialization: vi.fn(),
     rollbackAgentWorkflow: vi.fn(),
     saveAgentSoul: vi.fn(),
+    saveAndReloadAgentWorkflow: vi.fn(),
     saveAgentWorkflowDraft: vi.fn(),
     updateAgent: vi.fn(),
     updateAgentSkill: vi.fn(),
@@ -80,10 +81,9 @@ const workflow: AgentWorkflow = {
   workflowKey: "support",
   filePath: "workflows/support.ts",
   source: "export default { version: 1 }",
-  extension: "ts",
   draftHash: "draft-v1",
   activeHash: "active-v1",
-  revision: "draft-v1",
+  revision: 1,
   reloadStatus: "draft",
 };
 
@@ -311,19 +311,25 @@ describe("AgentsPage", () => {
 
   it("installs a skill through the controlled catalog", async () => {
     mocks.api.listSkillCatalogSources.mockResolvedValue({
-      items: [{ id: "builtin", name: "Built-in", sourceType: "registry" }],
+      items: [{ id: "builtin", label: "Built-in", sourceType: "registry" }],
       total: 1,
       page: 1,
       pageSize: 100,
     });
     mocks.api.listSkillCatalogSkills.mockResolvedValue({
-      items: [{ id: "qa", name: "qa", description: "QA helpers" }],
+      items: [{ skillId: "qa", name: "qa", description: "QA helpers" }],
       total: 1,
       page: 1,
       pageSize: 100,
     });
     mocks.api.listSkillCatalogVersions.mockResolvedValue({
-      items: [{ version: "1.2.0", immutableRef: "sha-120", isLatest: true }],
+      items: [
+        {
+          version: "1.2.0",
+          immutableRef: "sha-120",
+          createdAt: "2026-07-14T00:00:00Z",
+        },
+      ],
       total: 1,
       page: 1,
       pageSize: 100,
@@ -371,18 +377,12 @@ describe("AgentsPage", () => {
 
   it("edits, validates, and reloads a workflow draft", async () => {
     mocks.api.validateAgentWorkflow.mockResolvedValue({ valid: true });
-    mocks.api.saveAgentWorkflowDraft.mockResolvedValue({
-      ...workflow,
-      source: "export default { version: 2 }",
-      draftHash: "draft-v2",
-      revision: "draft-v2",
-    });
-    mocks.api.reloadAgentWorkflow.mockResolvedValue({
+    mocks.api.saveAndReloadAgentWorkflow.mockResolvedValue({
       ...workflow,
       source: "export default { version: 2 }",
       draftHash: "draft-v2",
       activeHash: "draft-v2",
-      revision: "draft-v2",
+      revision: 2,
       reloadStatus: "succeeded",
     });
     await renderReadyPage();
@@ -401,18 +401,47 @@ describe("AgentsPage", () => {
     );
 
     await waitFor(() =>
-      expect(mocks.api.saveAgentWorkflowDraft).toHaveBeenCalledWith(
+      expect(mocks.api.saveAndReloadAgentWorkflow).toHaveBeenCalledWith(
         "agent-a",
         "support",
-        expect.objectContaining({ expectedRevision: "draft-v1" }),
+        expect.objectContaining({ expectedRevision: 1 }),
       ),
     );
-    expect(mocks.api.reloadAgentWorkflow).toHaveBeenCalledWith(
+    expect(mocks.api.saveAgentWorkflowDraft).not.toHaveBeenCalled();
+    expect(mocks.api.reloadAgentWorkflow).not.toHaveBeenCalled();
+    expect(await screen.findByText("已生效")).toBeInTheDocument();
+  });
+
+  it("keeps Workflow validation read-like while ready writes stay disabled", async () => {
+    const initializing = { ...agent, status: "initializing" };
+    mocks.api.listAgents.mockResolvedValue(page([initializing]));
+    mocks.api.getAgent.mockResolvedValue(initializing);
+    mocks.api.validateAgentWorkflow.mockResolvedValue({ valid: true });
+    await renderReadyPage();
+
+    await userEvent.click(screen.getByRole("tab", { name: "Workflow" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "编辑 support" }),
+    );
+    const editor = await screen.findByLabelText("Workflow 源码");
+    expect(editor).toBeEnabled();
+    await userEvent.type(editor, "\n// validate only");
+    await userEvent.click(screen.getByRole("button", { name: "校验" }));
+
+    expect(mocks.api.validateAgentWorkflow).toHaveBeenCalledWith(
       "agent-a",
       "support",
-      "draft-v2",
+      expect.objectContaining({
+        source: expect.stringContaining("validate only"),
+      }),
     );
-    expect(await screen.findByText("已生效")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存 draft" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "保存并 reload" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "reload 当前 draft" }),
+    ).toBeDisabled();
   });
 
   it("keeps basic settings writable while disabling ready-gated resources", async () => {
@@ -618,19 +647,25 @@ describe("AgentsPage", () => {
       ],
     });
     mocks.api.listSkillCatalogSources.mockResolvedValue({
-      items: [{ id: "builtin", name: "Built-in", sourceType: "registry" }],
+      items: [{ id: "builtin", label: "Built-in", sourceType: "registry" }],
       total: 1,
       page: 1,
       pageSize: 100,
     });
     mocks.api.listSkillCatalogSkills.mockResolvedValue({
-      items: [{ id: "qa", name: "qa" }],
+      items: [{ skillId: "qa", name: "qa" }],
       total: 1,
       page: 1,
       pageSize: 100,
     });
     mocks.api.listSkillCatalogVersions.mockResolvedValue({
-      items: [{ version: "2.0.0", immutableRef: "sha-200" }],
+      items: [
+        {
+          version: "2.0.0",
+          immutableRef: "sha-200",
+          createdAt: "2026-07-14T00:00:00Z",
+        },
+      ],
       total: 1,
       page: 1,
       pageSize: 100,
