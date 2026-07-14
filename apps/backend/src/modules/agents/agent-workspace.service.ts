@@ -1,9 +1,11 @@
 import { constants, existsSync } from "fs";
-import { access, lstat, mkdir, readFile, realpath, writeFile } from "fs/promises";
+import { access, cp, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "fs/promises";
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { join, relative, resolve, sep } from "path";
 import { Agent } from "@prisma/client";
+import { createHash } from "crypto";
+import { AgentSkillMutation, SkillConfigEntry } from "./agent-skill-types";
 
 export interface AgentWorkspaceDescriptor {
   rootPath: string;
@@ -27,6 +29,14 @@ export interface InitializeWorkspaceOptions {
   allowExistingWorkspace?: boolean;
   syncExistingGenerated?: boolean;
   previousAgent?: InitializeWorkspaceInput;
+}
+
+export interface StagedSkillsConfig {
+  previousConfigVersion: string | null;
+  stagedConfigVersion: string;
+  config: {
+    skills: SkillConfigEntry[];
+  };
 }
 
 const SECRET_IGNORE_RULES = ["**/.env", "**/.env.*", "**/*.secret", "**/secrets.local.*"];
@@ -102,6 +112,81 @@ export class AgentWorkspaceService {
     });
   }
 
+  async listSkills(agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">): Promise<SkillConfigEntry[]> {
+    const descriptor = this.descriptorFromAgent(agent);
+    const skillsPath = join(descriptor.workspacePath, "skills", "skills.yaml");
+    const content = (await this.pathExists(skillsPath)) ? await readFile(skillsPath, "utf8") : "skills: []\n";
+    return this.parseManagedSkills(content);
+  }
+
+  async stageSkillsConfig(
+    agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">,
+    mutation: AgentSkillMutation
+  ): Promise<StagedSkillsConfig> {
+    const descriptor = this.descriptorFromAgent(agent);
+    await this.assertWorkspaceRootChainSafe();
+    await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
+
+    const previousConfigVersion = await this.readActiveConfigVersion(descriptor.workspacePath);
+    const skills = this.applySkillMutation(mutation);
+    const content = this.serializeSkills(skills);
+    const stagedConfigVersion = this.buildConfigVersion(content);
+    const stagingPath = join(
+      descriptor.workspacePath,
+      ".skills-state",
+      "staging",
+      mutation.changeId,
+      "skills.yaml"
+    );
+    await mkdir(join(stagingPath, ".."), { recursive: true });
+    await writeFile(stagingPath, content, "utf8");
+
+    return {
+      previousConfigVersion,
+      stagedConfigVersion,
+      config: { skills }
+    };
+  }
+
+  async commitSkillsConfig(
+    agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">,
+    changeId: string,
+    stagedConfigVersion: string
+  ): Promise<{ activeConfigVersion: string }> {
+    const descriptor = this.descriptorFromAgent(agent);
+    await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
+    const stagingPath = join(descriptor.workspacePath, ".skills-state", "staging", changeId, "skills.yaml");
+    const versionDir = join(descriptor.workspacePath, ".skills-state", "versions", stagedConfigVersion);
+    const versionPath = join(versionDir, "skills.yaml");
+    await mkdir(versionDir, { recursive: true });
+    await cp(stagingPath, versionPath);
+    await mkdir(join(descriptor.workspacePath, "skills"), { recursive: true });
+    await cp(versionPath, join(descriptor.workspacePath, "skills", "skills.yaml"));
+    await this.writeActiveConfig(descriptor.workspacePath, stagedConfigVersion);
+    await rm(join(descriptor.workspacePath, ".skills-state", "staging", changeId), { recursive: true, force: true });
+    return { activeConfigVersion: stagedConfigVersion };
+  }
+
+  async rollbackSkillsConfig(
+    agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">,
+    changeId: string,
+    previousConfigVersion: string | null
+  ): Promise<{ activeConfigVersion: string | null }> {
+    const descriptor = this.descriptorFromAgent(agent);
+    await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
+    if (!previousConfigVersion) {
+      await writeFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "skills: []\n", "utf8");
+      await this.writeActiveConfig(descriptor.workspacePath, null);
+      return { activeConfigVersion: null };
+    }
+
+    const previousPath = join(descriptor.workspacePath, ".skills-state", "versions", previousConfigVersion, "skills.yaml");
+    await cp(previousPath, join(descriptor.workspacePath, "skills", "skills.yaml"));
+    await this.writeActiveConfig(descriptor.workspacePath, previousConfigVersion);
+    await rm(join(descriptor.workspacePath, ".skills-state", "staging", changeId), { recursive: true, force: true });
+    return { activeConfigVersion: previousConfigVersion };
+  }
+
   getGitStatus(): "available" | "unavailable" {
     return this.isGitRepository() ? "available" : "unavailable";
   }
@@ -152,6 +237,101 @@ export class AgentWorkspaceService {
     files.set("secrets.example.env", this.buildSecretsExample(agent));
     files.set("README.md", this.buildReadme(agent, descriptor));
     return files;
+  }
+
+  private applySkillMutation(mutation: AgentSkillMutation): SkillConfigEntry[] {
+    const existing = mutation.currentSkills.filter((skill) => skill.name !== mutation.skillName);
+    if (mutation.operation === "remove") {
+      return existing;
+    }
+    return [
+      ...existing,
+      {
+        name: mutation.skillName,
+        version: mutation.resolvedVersion ?? mutation.version ?? "",
+        sourceType: mutation.sourceType,
+        sourceId: mutation.sourceId,
+        enabled: true,
+        systemRequired: false,
+        selfUpdateAllowed: false
+      }
+    ].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private serializeSkills(skills: SkillConfigEntry[]): string {
+    if (skills.length === 0) {
+      return "skills: []\n";
+    }
+    return [
+      "skills:",
+      ...skills.flatMap((skill) => [
+        `  - name: ${this.quoteYaml(skill.name)}`,
+        `    version: ${this.quoteYaml(skill.version)}`,
+        `    sourceType: ${skill.sourceType}`,
+        `    sourceId: ${this.quoteYaml(skill.sourceId)}`,
+        `    enabled: ${skill.enabled}`,
+        `    systemRequired: ${skill.systemRequired}`,
+        `    selfUpdateAllowed: ${skill.selfUpdateAllowed}`
+      ]),
+      ""
+    ].join("\n");
+  }
+
+  private parseManagedSkills(content: string): SkillConfigEntry[] {
+    if (content.trim() === "skills: []") {
+      return [];
+    }
+    const skills: SkillConfigEntry[] = [];
+    let current: Partial<SkillConfigEntry> | null = null;
+    for (const rawLine of content.split("\n")) {
+      const line = rawLine.trim();
+      if (line.startsWith("- name:")) {
+        if (current?.name && current.version && current.sourceId && current.sourceType) {
+          skills.push(current as SkillConfigEntry);
+        }
+        current = {
+          name: this.unquoteYaml(line.slice("- name:".length).trim()),
+          enabled: true,
+          systemRequired: false,
+          selfUpdateAllowed: false
+        };
+      } else if (current && line.includes(":")) {
+        const [key, ...valueParts] = line.split(":");
+        const value = this.unquoteYaml(valueParts.join(":").trim());
+        if (key === "version") current.version = value;
+        if (key === "sourceType" && (value === "registry" || value === "git")) current.sourceType = value;
+        if (key === "sourceId") current.sourceId = value;
+        if (key === "enabled") current.enabled = value === "true";
+        if (key === "systemRequired") current.systemRequired = value === "true";
+        if (key === "selfUpdateAllowed") current.selfUpdateAllowed = value === "true";
+      }
+    }
+    if (current?.name && current.version && current.sourceId && current.sourceType) {
+      skills.push(current as SkillConfigEntry);
+    }
+    return skills;
+  }
+
+  private buildConfigVersion(content: string): string {
+    return `cfg_${createHash("sha256").update(content).digest("hex").slice(0, 16)}`;
+  }
+
+  private async readActiveConfigVersion(workspacePath: string): Promise<string | null> {
+    const activePath = join(workspacePath, ".skills-state", "active.json");
+    if (!(await this.pathExists(activePath))) {
+      return null;
+    }
+    const active = JSON.parse(await readFile(activePath, "utf8")) as { activeConfigVersion?: string | null };
+    return active.activeConfigVersion ?? null;
+  }
+
+  private async writeActiveConfig(workspacePath: string, activeConfigVersion: string | null): Promise<void> {
+    const stateDir = join(workspacePath, ".skills-state");
+    const nextPath = join(stateDir, "active.next.json");
+    const activePath = join(stateDir, "active.json");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(nextPath, `${JSON.stringify({ activeConfigVersion }, null, 2)}\n`, "utf8");
+    await rename(nextPath, activePath);
   }
 
   private buildAgentYaml(agent: InitializeWorkspaceInput, descriptor: AgentWorkspaceDescriptor): string {
@@ -369,5 +549,12 @@ export class AgentWorkspaceService {
 
   private quoteYaml(value: string): string {
     return JSON.stringify(value);
+  }
+
+  private unquoteYaml(value: string): string {
+    if (value.startsWith('"')) {
+      return JSON.parse(value) as string;
+    }
+    return value;
   }
 }
