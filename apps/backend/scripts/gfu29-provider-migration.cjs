@@ -124,12 +124,13 @@ async function plan(targetProviderId) {
     .map((row) => ({ row, reason: mappingIssue(row) }))
     .filter(({ reason }) => reason !== null);
   const nonQaBlockers = blocked
-    .filter(({ row }) => !row.agentId.startsWith("qa-"))
+    .filter(({ row }) => !row.agentSlug.startsWith("qa-"))
     .map(({ row }) => row.agentId);
   const remediationPlan = blocked
-    .filter(({ row }) => row.agentId.startsWith("qa-"))
+    .filter(({ row }) => row.agentSlug.startsWith("qa-"))
     .map(({ row, reason }) => ({
       agentId: row.agentId,
+      agentSlug: row.agentSlug,
       fromLegacyProvider: row.legacy,
       fromModelProviderId: row.modelProviderId,
       toProviderId: targetProviderId,
@@ -162,6 +163,7 @@ async function providerMappings() {
   const mappings = await prisma.$queryRawUnsafe(`
     WITH mapping AS (
       SELECT agent."id" AS "agentId",
+             agent."slug" AS "agentSlug",
              NULLIF(BTRIM(agent."modelProvider"), '') AS legacy,
              ${providerIdProjection} AS "modelProviderId",
              id_provider."id" AS "idMatch",

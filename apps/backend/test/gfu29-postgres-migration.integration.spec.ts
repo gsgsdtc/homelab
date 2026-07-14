@@ -279,10 +279,11 @@ describe("GFU-29 PostgreSQL Provider migration", () => {
       await historyDb.$executeRawUnsafe(`
         INSERT INTO "Agent" ("id", "name", "slug", "status", "workspaceName", "workspacePath", "modelProvider", "modelProviderId", "soul", "updatedAt")
         VALUES
-          ('qa-history-1', 'QA History One', 'qa-history-one', 'ready', 'agent--qa-history-one', '.homelab/agents/agent--qa-history-one', 'old-history-one', NULL, '', NOW()),
-          ('qa-history-2', 'QA History Two', 'qa-history-two', 'ready', 'agent--qa-history-two', '.homelab/agents/agent--qa-history-two', 'old-history-two', NULL, '', NOW()),
-          ('qa-history-3', 'QA History Three', 'qa-history-three', 'ready', 'agent--qa-history-three', '.homelab/agents/agent--qa-history-three', 'old-history-three', NULL, '', NOW()),
-          ('qa-history-4', 'QA History Four', 'qa-history-four', 'ready', 'agent--qa-history-four', '.homelab/agents/agent--qa-history-four', 'old-history-four', NULL, '', NOW())
+          ('0e8fd8f6-a54d-40e0-a705-87f50bdbc835', 'QA History One', 'qa-gfu24-e2e-1783942867', 'ready', 'agent--qa-history-one', '.homelab/agents/agent--qa-history-one', 'qa-provider-updated', NULL, '', NOW()),
+          ('29199732-2d9f-447b-af87-e0f9bb2ffd73', 'QA History Two', 'qa-gfu25-20260714053638', 'ready', 'agent--qa-history-two', '.homelab/agents/agent--qa-history-two', 'openai', NULL, '', NOW()),
+          ('a143df05-8d01-403d-a343-b2f869e7e544', 'QA History Three', 'qa-gfu24-rewrite-1783942911', 'ready', 'agent--qa-history-three', '.homelab/agents/agent--qa-history-three', 'qa-provider', NULL, '', NOW()),
+          ('c3a11eb5-ede6-447d-b433-ab63fca7ca46', 'QA History Four', 'qa-gfu24-e2e-1783942816', 'ready', 'agent--qa-history-four', '.homelab/agents/agent--qa-history-four', 'qa-provider-updated', NULL, '', NOW()),
+          ('f0000000-0000-4000-8000-000000000001', 'Non QA History', 'ops-history', 'ready', 'agent--ops-history', '.homelab/agents/agent--ops-history', 'old-ops-provider', NULL, '', NOW())
       `);
 
       const beforeFailedDeploy = await snapshotHistoryState(
@@ -292,10 +293,11 @@ describe("GFU-29 PostgreSQL Provider migration", () => {
       expect(runCheck("preflight", undefined, historyUrl)).toMatchObject({
         preflightPassed: false,
         unresolved: [
-          "qa-history-1",
-          "qa-history-2",
-          "qa-history-3",
-          "qa-history-4",
+          "0e8fd8f6-a54d-40e0-a705-87f50bdbc835",
+          "29199732-2d9f-447b-af87-e0f9bb2ffd73",
+          "a143df05-8d01-403d-a343-b2f869e7e544",
+          "c3a11eb5-ede6-447d-b433-ab63fca7ca46",
+          "f0000000-0000-4000-8000-000000000001",
         ],
         exitStatus: 2,
       });
@@ -308,15 +310,39 @@ describe("GFU-29 PostgreSQL Provider migration", () => {
 
       migrateResolve(historyUrl, migrationName);
       expect(runCheck("plan", "history-provider", historyUrl)).toMatchObject({
-        planPassed: true,
+        planPassed: false,
         writesExecuted: 0,
         remediationPlan: [
-          { agentId: "qa-history-1", toProviderId: "history-provider" },
-          { agentId: "qa-history-2", toProviderId: "history-provider" },
-          { agentId: "qa-history-3", toProviderId: "history-provider" },
-          { agentId: "qa-history-4", toProviderId: "history-provider" },
+          {
+            agentId: "0e8fd8f6-a54d-40e0-a705-87f50bdbc835",
+            agentSlug: "qa-gfu24-e2e-1783942867",
+            toProviderId: "history-provider",
+            guardedSql: [
+              'UPDATE "Agent"',
+              "SET \"modelProvider\" = 'history-provider', \"modelProviderId\" = 'history-provider'",
+              "WHERE \"id\" = '0e8fd8f6-a54d-40e0-a705-87f50bdbc835'",
+              "  AND \"modelProvider\" IS NOT DISTINCT FROM 'qa-provider-updated'",
+              '  AND "modelProviderId" IS NOT DISTINCT FROM NULL;',
+            ].join("\n"),
+          },
+          {
+            agentId: "29199732-2d9f-447b-af87-e0f9bb2ffd73",
+            agentSlug: "qa-gfu25-20260714053638",
+            toProviderId: "history-provider",
+          },
+          {
+            agentId: "a143df05-8d01-403d-a343-b2f869e7e544",
+            agentSlug: "qa-gfu24-rewrite-1783942911",
+            toProviderId: "history-provider",
+          },
+          {
+            agentId: "c3a11eb5-ede6-447d-b433-ab63fca7ca46",
+            agentSlug: "qa-gfu24-e2e-1783942816",
+            toProviderId: "history-provider",
+          },
         ],
-        exitStatus: 0,
+        nonQaBlockers: ["f0000000-0000-4000-8000-000000000001"],
+        exitStatus: 2,
       });
       await expect(
         snapshotHistoryState(historyDb, historySchema),
@@ -324,7 +350,6 @@ describe("GFU-29 PostgreSQL Provider migration", () => {
       await historyDb.$executeRawUnsafe(`
         UPDATE "Agent"
         SET "modelProvider" = 'history-provider', "modelProviderId" = 'history-provider'
-        WHERE "id" LIKE 'qa-history-%'
       `);
 
       migrateDeploy(resolve(prismaRoot, "schema.prisma"), historyUrl);
@@ -344,10 +369,16 @@ describe("GFU-29 PostgreSQL Provider migration", () => {
       await expect(
         historyDb.$queryRawUnsafe(`
           SELECT "modelProvider", "modelProviderId", "revision", "soulRevision"
-          FROM "Agent" WHERE "id" LIKE 'qa-history-%'
+          FROM "Agent"
           ORDER BY "id"
         `),
       ).resolves.toEqual([
+        {
+          modelProvider: "history-provider",
+          modelProviderId: "history-provider",
+          revision: 1,
+          soulRevision: 1,
+        },
         {
           modelProvider: "history-provider",
           modelProviderId: "history-provider",
