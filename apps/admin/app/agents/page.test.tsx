@@ -176,6 +176,22 @@ describe("AgentsPage", () => {
     expect(screen.getByDisplayValue("Unsaved soul")).toBeInTheDocument();
   });
 
+  it("shows a visible validation message for blank soul drafts", async () => {
+    mockAdmin();
+    mockAgentList();
+    mockLoadedAgent();
+
+    await renderLoadedPage();
+
+    fireEvent.change(screen.getByLabelText("Soul 内容"), {
+      target: { value: "   \n\t" },
+    });
+
+    expect(await screen.findByText("soul 内容不能为空")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    expect(mocks.api.saveAgentSoul).not.toHaveBeenCalled();
+  });
+
   it("restores the latest loaded soul when cancelling edits", async () => {
     mockAdmin();
     mockAgentList();

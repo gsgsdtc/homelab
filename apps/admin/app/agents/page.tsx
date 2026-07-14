@@ -381,6 +381,10 @@ function AgentSoulPanel({
   const cancelDisabled = saving || detailLoading || draft === saved;
   const editorDisabled =
     !canEdit || saving || detailLoading || fileStatus === "error";
+  const draftValidationError =
+    canEdit && !detailLoading && !saving && fileStatus !== "error"
+      ? validateAgentSoulDraft(draft)
+      : null;
 
   return (
     <section className="soul-panel" aria-label="Soul 系统提示词">
@@ -405,6 +409,9 @@ function AgentSoulPanel({
         </div>
       ) : null}
       {error ? <div className="notice compact error">{error}</div> : null}
+      {draftValidationError ? (
+        <div className="notice compact error">{draftValidationError}</div>
+      ) : null}
       {message ? <div className="notice compact success">{message}</div> : null}
       <label>
         内容
