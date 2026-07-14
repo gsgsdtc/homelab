@@ -287,6 +287,169 @@ describe("AgentChatPage", () => {
     });
   });
 
+  it("blocks a historical retry while another logical message result is unknown", async () => {
+    mockReady();
+    mocks.api.sendAgentChatMessage
+      .mockImplementationOnce(
+        (
+          _agentId: string,
+          _sessionId: string,
+          payload: { clientMessageId: string },
+        ) =>
+          Promise.resolve({
+            requestId: "req-failed",
+            executionId: "exec-failed",
+            clientMessageId: payload.clientMessageId,
+            logicalMessageId: payload.clientMessageId,
+            retryOfClientMessageId: null,
+            status: "failed",
+            code: "MODEL_TIMEOUT",
+            message: "模型响应超时",
+            retryable: true,
+            acceptedAt: "2026-07-14T00:00:00Z",
+            completedAt: "2026-07-14T00:00:01Z",
+            replayed: false,
+          }),
+      )
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    vi.spyOn(globalThis.crypto, "randomUUID")
+      .mockReturnValueOnce("message1-0000-0000-0000-000000000001")
+      .mockReturnValueOnce("message2-0000-0000-0000-000000000002");
+
+    render(<AgentChatPage />);
+    const input = await getReadyInput();
+    await userEvent.type(input, "first message");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+    const retryButton = await screen.findByRole("button", {
+      name: "重新执行",
+    });
+
+    await userEvent.type(input, "second message");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByRole("status", { name: "消息状态" })
+          .some((status) =>
+            status.textContent?.includes("发送结果未知，请继续确认"),
+          ),
+      ).toBe(true),
+    );
+
+    const sentClientMessageIds = mocks.api.sendAgentChatMessage.mock.calls.map(
+      (call) => call[2].clientMessageId,
+    );
+    expect(retryButton).toBeDisabled();
+    await userEvent.click(retryButton);
+    expect(mocks.api.sendAgentChatMessage).toHaveBeenCalledTimes(2);
+    expect(
+      mocks.api.sendAgentChatMessage.mock.calls.map(
+        (call) => call[2].clientMessageId,
+      ),
+    ).toEqual(sentClientMessageIds);
+    expect(
+      screen.getByRole("button", { name: "继续确认" }),
+    ).toBeEnabled();
+  });
+
+  it("ends the session for a terminal CHAT_MESSAGE_LIMIT failure", async () => {
+    mockReady();
+    mocks.api.sendAgentChatMessage.mockImplementation(
+      (
+        _agentId: string,
+        _sessionId: string,
+        payload: { clientMessageId: string },
+      ) =>
+        Promise.resolve({
+          requestId: "req-message-limit",
+          executionId: "exec-message-limit",
+          clientMessageId: payload.clientMessageId,
+          logicalMessageId: payload.clientMessageId,
+          retryOfClientMessageId: null,
+          status: "failed",
+          code: "CHAT_MESSAGE_LIMIT",
+          message: "会话消息数已达到上限",
+          retryable: false,
+          acceptedAt: "2026-07-14T00:00:00Z",
+          completedAt: "2026-07-14T00:00:01Z",
+          replayed: false,
+        }),
+    );
+
+    render(<AgentChatPage />);
+    const input = await getReadyInput();
+    await userEvent.type(input, "one more message");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(
+      await screen.findByRole("status", { name: "会话状态" }),
+    ).toHaveTextContent("会话消息数已达到上限");
+    expect(screen.getByRole("button", { name: "开始新会话" })).toBeEnabled();
+    expect(input).toBeDisabled();
+  });
+
+  it("ends the session for a rejected CHAT_MESSAGE_LIMIT request", async () => {
+    mockReady();
+    mocks.api.sendAgentChatMessage.mockImplementation(
+      (
+        _agentId: string,
+        _sessionId: string,
+        payload: { clientMessageId: string },
+      ) =>
+        Promise.reject({
+          status: 409,
+          details: {
+            requestId: "req-message-limit",
+            executionId: null,
+            clientMessageId: payload.clientMessageId,
+            status: "rejected",
+            code: "CHAT_MESSAGE_LIMIT",
+            message: "会话消息数已达到上限",
+            retryable: false,
+          },
+        }),
+    );
+
+    render(<AgentChatPage />);
+    const input = await getReadyInput();
+    await userEvent.type(input, "one more message");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(
+      await screen.findByRole("status", { name: "会话状态" }),
+    ).toHaveTextContent("会话消息数已达到上限");
+    expect(screen.getByRole("button", { name: "开始新会话" })).toBeEnabled();
+    expect(input).toBeDisabled();
+  });
+
+  it("recovers from CHAT_SESSION_LIMIT during session initialization", async () => {
+    mocks.api.getAgentChatEligibility.mockResolvedValue(eligibility);
+    mocks.api.createAgentChatSession
+      .mockRejectedValueOnce({
+        status: 409,
+        details: {
+          requestId: "req-session-limit",
+          executionId: null,
+          clientMessageId: null,
+          status: "rejected",
+          code: "CHAT_SESSION_LIMIT",
+          message: "活跃会话数已达到上限",
+          retryable: false,
+        },
+      })
+      .mockResolvedValueOnce({ ...session, sessionId: "session-b" });
+
+    render(<AgentChatPage />);
+
+    expect(
+      await screen.findByRole("status", { name: "会话状态" }),
+    ).toHaveTextContent("活跃会话数已达到上限");
+    expect(screen.getByLabelText("消息内容")).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "开始新会话" }));
+    expect(await getReadyInput()).toBeEnabled();
+    expect(mocks.api.createAgentChatSession).toHaveBeenCalledTimes(2);
+  });
+
   it("ends the session for a terminal CHAT_CONTEXT_LIMIT failure", async () => {
     mockReady();
     mocks.api.sendAgentChatMessage.mockImplementation(

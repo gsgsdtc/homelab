@@ -34,8 +34,8 @@ type PagePhase =
 const sessionEndedCodes = new Set([
   "CHAT_SESSION_EXPIRED",
   "CHAT_SESSION_EVICTED",
-  "CHAT_SESSION_LIMIT_REACHED",
-  "CHAT_MESSAGE_LIMIT_REACHED",
+  "CHAT_SESSION_LIMIT",
+  "CHAT_MESSAGE_LIMIT",
   "CHAT_CONTEXT_LIMIT",
 ]);
 
@@ -128,6 +128,11 @@ export default function AgentChatPage() {
       } catch (error) {
         if (!mountedRef.current) return;
         handlePageError(error, {
+          onSessionEnded: (rejected) => {
+            setPhase("session_ended");
+            setPageCode(rejected.code);
+            setPageMessage(rejected.message);
+          },
           onBlocked: (rejected) => {
             setPhase("blocked");
             setPageCode(rejected.code);
@@ -275,7 +280,14 @@ export default function AgentChatPage() {
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!session || phase !== "ready" || busy) return;
+    if (
+      !session ||
+      phase !== "ready" ||
+      busy ||
+      hasUnresolvedChatAttempt(chatRef.current)
+    ) {
+      return;
+    }
     const validation = validateChatContent(draft, session.maxCodePoints);
     if (validation.error) {
       setFieldError(validation.error);
@@ -300,6 +312,8 @@ export default function AgentChatPage() {
     if (
       !previous ||
       !session ||
+      busy ||
+      hasUnresolvedChatAttempt(chatRef.current) ||
       message.attempts.length >= session.maxAttemptsPerMessage
     ) {
       return;
@@ -328,12 +342,7 @@ export default function AgentChatPage() {
   const configTarget = pageCode
     ? getChatConfigurationTarget(pageCode, agentId)
     : null;
-  const hasUnresolvedAttempt = chat.messages.some(
-    (message) =>
-      message.status === "sending" ||
-      message.status === "confirming" ||
-      message.status === "result_unknown",
-  );
+  const hasUnresolvedAttempt = hasUnresolvedChatAttempt(chat);
   const canCompose =
     phase === "ready" && Boolean(session) && !busy && !hasUnresolvedAttempt;
 
@@ -456,6 +465,8 @@ export default function AgentChatPage() {
                   key={message.logicalMessageId}
                   message={message}
                   maxAttempts={session.maxAttemptsPerMessage}
+                  newAttemptsDisabled={busy || hasUnresolvedAttempt}
+                  confirmationDisabled={busy}
                   onConfirm={(payload) => void processPayload(payload)}
                   onRetry={() => retry(message)}
                 />
@@ -515,16 +526,20 @@ export default function AgentChatPage() {
 function ChatBubble({
   message,
   maxAttempts,
+  newAttemptsDisabled,
+  confirmationDisabled,
   onConfirm,
   onRetry,
 }: {
   message: AgentChatBubble;
   maxAttempts: number;
+  newAttemptsDisabled: boolean;
+  confirmationDisabled: boolean;
   onConfirm: (payload: AgentChatMessageRequest) => void;
   onRetry: () => void;
 }) {
   const payload = getActivePayload(message);
-  const canRetry =
+  const hasRetry =
     message.status === "failed" &&
     message.failure?.retryable &&
     message.attempts.length < maxAttempts;
@@ -550,7 +565,7 @@ function ChatBubble({
             <span>发送结果未知，请继续确认</span>
             <button
               className="ghost-button inline-ghost"
-              disabled={!payload}
+              disabled={!payload || confirmationDisabled}
               onClick={() => payload && onConfirm(payload)}
               type="button"
             >
@@ -563,9 +578,10 @@ function ChatBubble({
             <span className="error-text">
               消息发送失败：{message.failure.message}
             </span>
-            {canRetry ? (
+            {hasRetry ? (
               <button
                 className="ghost-button inline-ghost"
+                disabled={newAttemptsDisabled}
                 onClick={onRetry}
                 type="button"
               >
@@ -602,6 +618,15 @@ function getActivePayload(message: AgentChatBubble) {
   return message.attempts.at(-1)?.payload ?? null;
 }
 
+function hasUnresolvedChatAttempt(chat: AgentChatState) {
+  return chat.messages.some(
+    (message) =>
+      message.status === "sending" ||
+      message.status === "confirming" ||
+      message.status === "result_unknown",
+  );
+}
+
 function getRejected(error: unknown): AgentChatRejected | null {
   if (!error || typeof error !== "object" || !("details" in error)) return null;
   const details = (error as { details?: unknown }).details;
@@ -636,6 +661,7 @@ function isPermissionError(error: unknown) {
 function handlePageError(
   error: unknown,
   handlers: {
+    onSessionEnded: (rejected: AgentChatRejected) => void;
     onBlocked: (rejected: AgentChatRejected) => void;
     onPermissionDenied: () => void;
     onOther: (message: string) => void;
@@ -646,6 +672,10 @@ function handlePageError(
     return;
   }
   const rejected = getRejected(error);
+  if (rejected && sessionEndedCodes.has(rejected.code)) {
+    handlers.onSessionEnded(rejected);
+    return;
+  }
   if (rejected && configurationCodes.has(rejected.code)) {
     handlers.onBlocked(rejected);
     return;
