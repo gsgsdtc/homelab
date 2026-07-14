@@ -44,7 +44,16 @@ export interface WorkflowSourceWriteResult {
   path: string;
 }
 
+export type AgentSoulFileStatus = "loaded" | "missing" | "error";
+
+export interface AgentSoulRead {
+  content: string | null;
+  status: AgentSoulFileStatus;
+  message?: string;
+}
+
 const SECRET_IGNORE_RULES = ["**/.env", "**/.env.*", "**/*.secret", "**/secrets.local.*"];
+const SOUL_FILE_NAME = "soul.md";
 
 @Injectable()
 export class AgentWorkspaceService {
@@ -245,6 +254,68 @@ export class AgentWorkspaceService {
     return readFile(sourcePath, "utf8");
   }
 
+  async readSoul(agent: Pick<InitializeWorkspaceInput, "name" | "workspaceName" | "workspacePath">): Promise<AgentSoulRead> {
+    const descriptor = this.descriptorFromAgent(agent);
+    try {
+      await this.assertSoulPathSafe(descriptor);
+      return {
+        content: await readFile(this.soulPath(descriptor), "utf8"),
+        status: "loaded"
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return {
+          content: this.buildDefaultSoul(agent),
+          status: "missing"
+        };
+      }
+      return {
+        content: null,
+        status: "error",
+        message: this.formatReadError(error)
+      };
+    }
+  }
+
+  async readSoulForRun(agent: Pick<InitializeWorkspaceInput, "name" | "workspaceName" | "workspacePath">): Promise<string> {
+    const soul = await this.readSoul(agent);
+    if (soul.status === "error" || soul.content === null) {
+      throw new Error(soul.message || "soul read failed");
+    }
+    return soul.content;
+  }
+
+  async writeSoul(
+    agent: Pick<InitializeWorkspaceInput, "name" | "workspaceName" | "workspacePath">,
+    content: string
+  ): Promise<void> {
+    const descriptor = this.descriptorFromAgent(agent);
+    await this.assertWorkspaceRootChainSafe();
+    await mkdir(descriptor.workspacePath, { recursive: true });
+    await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
+    await this.assertSoulPathSafe(descriptor, { allowMissingFile: true });
+    await writeFile(this.soulPath(descriptor), content, "utf8");
+  }
+
+  async deleteSoul(agent: Pick<InitializeWorkspaceInput, "name" | "workspaceName" | "workspacePath">): Promise<void> {
+    const descriptor = this.descriptorFromAgent(agent);
+    await this.assertWorkspaceRootChainSafe();
+    await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
+    const soulPath = this.soulPath(descriptor);
+    this.assertInsideRoot(descriptor.rootPath, soulPath);
+    const stat = await this.lstatIfExists(soulPath);
+    if (!stat) {
+      return;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error("soul path must not be a symbolic link");
+    }
+    if (!stat.isFile()) {
+      throw new Error("soul path exists and is not a file");
+    }
+    await rm(soulPath);
+  }
+
   private descriptorFromAgent(agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">) {
     const rootPath = this.getWorkspaceRoot();
     const workspacePath = resolve(this.getRepoRoot(), agent.workspacePath);
@@ -293,7 +364,7 @@ export class AgentWorkspaceService {
   ): Map<string, string> {
     const files = new Map<string, string>();
     files.set("agent.yaml", this.buildAgentYaml(agent, descriptor));
-    files.set("soul.md", agent.soul || `# ${agent.name}\n`);
+    files.set(SOUL_FILE_NAME, agent.soul || this.buildDefaultSoul(agent));
     files.set("skills/skills.yaml", "skills: []\n");
     files.set("workflows/workflow.yaml", "workflows: []\n");
     files.set("secrets.example.env", this.buildSecretsExample(agent));
@@ -430,6 +501,15 @@ export class AgentWorkspaceService {
       return;
     }
 
+    if (relativePath === SOUL_FILE_NAME) {
+      const stat = await this.lstatIfExists(path);
+      if (stat?.isSymbolicLink()) {
+        throw new Error("soul path must not be a symbolic link");
+      }
+      await writeFile(path, content, "utf8");
+      return;
+    }
+
     const existingContent = await readFile(path, "utf8");
     if (existingContent === content) {
       return;
@@ -478,6 +558,40 @@ export class AgentWorkspaceService {
 
   private getWorkspaceRoot(): string {
     return resolve(this.getRepoRoot(), ".homelab", "agents");
+  }
+
+  private buildDefaultSoul(agent: Pick<InitializeWorkspaceInput, "name">): string {
+    return `# ${agent.name}\n`;
+  }
+
+  private soulPath(descriptor: AgentWorkspaceDescriptor): string {
+    return join(descriptor.workspacePath, SOUL_FILE_NAME);
+  }
+
+  private async assertSoulPathSafe(
+    descriptor: AgentWorkspaceDescriptor,
+    options: { allowMissingFile?: boolean } = {}
+  ): Promise<void> {
+    await this.assertWorkspaceRootChainSafe();
+    await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
+    const soulPath = this.soulPath(descriptor);
+    this.assertInsideRoot(descriptor.rootPath, soulPath);
+    const stat = await this.lstatIfExists(soulPath);
+    if (!stat) {
+      if (options.allowMissingFile) {
+        return;
+      }
+      const error = new Error(`${SOUL_FILE_NAME} not found`) as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error("soul path must not be a symbolic link");
+    }
+    if (!stat.isFile()) {
+      throw new Error("soul path exists and is not a file");
+    }
+    await this.assertNoSymlinkEscape(descriptor.rootPath, soulPath);
   }
 
   private buildAgentIdShort(agentId: string): string {
@@ -630,5 +744,9 @@ export class AgentWorkspaceService {
       return JSON.parse(value) as string;
     }
     return value;
+  }
+
+  private formatReadError(error: unknown): string {
+    return error instanceof Error ? error.message : "soul read failed";
   }
 }

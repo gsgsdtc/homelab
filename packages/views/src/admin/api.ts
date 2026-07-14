@@ -30,6 +30,7 @@ export interface AppIdentity {
 
 export type AgentStatus = "initializing" | "ready" | "init_failed";
 export type AgentGitStatus = "available" | "unavailable" | "dirty" | "clean";
+export type AgentSoulFileStatus = "loaded" | "missing" | "error";
 
 export interface AgentInitError {
   code?: string;
@@ -47,6 +48,8 @@ export interface Agent {
   modelProvider?: string | null;
   modelSecretRef?: string | null;
   soul?: string | null;
+  soulFileStatus?: AgentSoulFileStatus;
+  soulFileError?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -331,6 +334,13 @@ export class AdminApiClient {
     return this.request<Agent>(`/agents/${id}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
+    });
+  }
+
+  saveAgentSoul(id: string, soul: string) {
+    return this.request<Agent>(`/agents/${id}/soul`, {
+      method: "PATCH",
+      body: JSON.stringify({ soul }),
     });
   }
 
