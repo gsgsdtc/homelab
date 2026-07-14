@@ -127,6 +127,9 @@ export class AgentWorkflowValidator {
       if (this.isEnvObjectReference(node)) {
         throw new BadRequestException("workflow env access must directly read an allowlisted env name");
       }
+      if (this.isProcessObjectReference(node)) {
+        throw new BadRequestException("workflow process access must be a direct allowlisted env read");
+      }
       ts.forEachChild(node, visit);
     };
     visit(sourceFile);
@@ -174,6 +177,12 @@ export class AgentWorkflowValidator {
     }
     if (ts.isPropertyAccessExpression(node) && node.name.text === "process" && ts.isIdentifier(node.expression)) {
       return node.expression.text === "globalThis" || node.expression.text === "global";
+    }
+    if (ts.isElementAccessExpression(node) && (ts.isIdentifier(node.expression))) {
+      return (
+        (node.expression.text === "globalThis" || node.expression.text === "global") &&
+        this.literalText(node.argumentExpression) === "process"
+      );
     }
     return this.isRequireProcessCall(node);
   }

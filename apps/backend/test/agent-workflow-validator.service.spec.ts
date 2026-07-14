@@ -153,6 +153,8 @@ describe("AgentWorkflowValidator", () => {
 
   it("rejects env aliasing, destructuring, process bracket env access, and nonliteral env keys", () => {
     for (const prefix of [
+      "const proc = process;\nconst key = proc.env.AWS_SECRET_ACCESS_KEY;",
+      "const { env } = process;\nconst key = env.AWS_SECRET_ACCESS_KEY;",
       "const env = process.env;\nconst key = env.AWS_SECRET_ACCESS_KEY;",
       "const { AWS_SECRET_ACCESS_KEY } = process.env;",
       'const key = process["env"].AWS_SECRET_ACCESS_KEY;',
@@ -160,7 +162,9 @@ describe("AgentWorkflowValidator", () => {
       "const allEnvKeys = Object.keys(process.env);",
       'const key = require("process").env.AWS_SECRET_ACCESS_KEY;',
       "const key = globalThis.process.env.AWS_SECRET_ACCESS_KEY;",
-      "const key = global.process.env.AWS_SECRET_ACCESS_KEY;"
+      "const key = global.process.env.AWS_SECRET_ACCESS_KEY;",
+      'const env = globalThis["process"].env;\nconst key = env.AWS_SECRET_ACCESS_KEY;',
+      'const env = global["process"].env;\nconst key = env.AWS_SECRET_ACCESS_KEY;'
     ]) {
       expect(() =>
         validator.validateSource({
