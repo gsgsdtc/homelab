@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { AdminApiClient } from "@homelab/views";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -132,6 +133,64 @@ describe("AgentChatPage", () => {
     ).toHaveAttribute("href", "/agents/agent-a/workflows");
     expect(screen.getByLabelText("消息内容")).toBeDisabled();
     expect(mocks.api.createAgentChatSession).not.toHaveBeenCalled();
+  });
+
+  it("enters blocked state when eligibility succeeds before create-session returns a configuration 422", async () => {
+    const backendFetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(eligibility), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            requestId: "req_00000000000000000001",
+            executionId: null,
+            clientMessageId: null,
+            status: "rejected",
+            code: "PROVIDER_DISABLED",
+            message: "Agent model provider is disabled",
+            retryable: false,
+          }),
+          {
+            status: 422,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      );
+    const backend = new AdminApiClient({
+      baseUrl: "http://backend.test",
+      fetcher: backendFetch as typeof fetch,
+    });
+    mocks.api.getAgentChatEligibility.mockImplementation((agentId: string) =>
+      backend.getAgentChatEligibility(agentId),
+    );
+    mocks.api.createAgentChatSession.mockImplementation((agentId: string) =>
+      backend.createAgentChatSession(agentId),
+    );
+
+    render(<AgentChatPage />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Agent model provider is disabled",
+    );
+    expect(
+      screen.getByRole("link", { name: "前往模型提供方配置" }),
+    ).toHaveAttribute("href", "/model-providers");
+    expect(screen.getByLabelText("消息内容")).toBeDisabled();
+    expect(backendFetch).toHaveBeenNthCalledWith(
+      1,
+      "http://backend.test/agents/agent-a/chat/eligibility",
+      expect.any(Object),
+    );
+    expect(backendFetch).toHaveBeenNthCalledWith(
+      2,
+      "http://backend.test/agents/agent-a/chat/sessions",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
   it("confirms a network-unknown result with the original payload", async () => {
