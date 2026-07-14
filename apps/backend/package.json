@@ -13,6 +13,7 @@
     "e2e:fixture": "node scripts/gfu29-fixture.cjs",
     "rollback:artifact": "node scripts/gfu29-rollback-artifact.cjs",
     "provider:migration:preflight": "node scripts/gfu29-provider-migration.cjs --action preflight",
+    "provider:migration:plan": "node scripts/gfu29-provider-migration.cjs --action plan",
     "provider:migration:validate": "node scripts/gfu29-provider-migration.cjs --action validate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
