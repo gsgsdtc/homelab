@@ -269,6 +269,7 @@ describe("AdminApiClient", () => {
         okJson({ ...agent, status: "ready", initError: null }),
       )
       .mockResolvedValueOnce(okJson({ ...agent, name: "Ops Agent 2" }))
+      .mockResolvedValueOnce(okJson({ ...agent, soul: "Managed soul content" }))
       .mockResolvedValueOnce(
         okJson({ ...agent, status: "ready", initError: null }),
       );
@@ -291,6 +292,7 @@ describe("AdminApiClient", () => {
       name: "Ops Agent 2",
       soul: "Updated soul",
     });
+    await client.saveAgentSoul("agent-1", "Managed soul content");
     await client.retryAgentInitialization("agent-1");
 
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -329,6 +331,14 @@ describe("AdminApiClient", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       5,
+      "/api/backend/agents/agent-1/soul",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ soul: "Managed soul content" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
       "/api/backend/agents/agent-1/retry-initialization",
       expect.objectContaining({ method: "POST" }),
     );
