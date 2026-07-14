@@ -22,6 +22,68 @@ enum ModelProviderType {
   OPENAI_COMPATIBLE
 }
 
+enum AgentSkillSourceType {
+  registry
+  git
+}
+
+enum AgentSkillOperation {
+  install
+  update
+  remove
+}
+
+enum AgentSkillActorType {
+  admin
+  agent
+}
+
+enum AgentSkillChangeStatus {
+  pending
+  validating
+  applying
+  reloading
+  succeeded
+  failed
+  rolled_back
+  rollback_failed
+}
+
+enum AgentSkillReloadStatus {
+  loaded
+  failed
+  pending_restart
+  runtime_offline
+  unknown
+}
+
+enum AgentSkillAuditStatus {
+  audit_written
+  audit_pending
+  audit_failed
+}
+
+enum AgentSkillRollbackResult {
+  not_required
+  succeeded
+  failed
+  skipped
+}
+
+enum AgentSkillFailedStage {
+  permission
+  audit_init
+  source_validation
+  version_resolution
+  manifest_validation
+  staging_write
+  atomic_switch
+  reload
+  rollback
+  audit_write
+  concurrency_lock
+}
+
 model User {
   id           String   @id @default(cuid())
   username     String   @unique
@@ -59,6 +121,9 @@ model Agent {
   initializedAt       DateTime?
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
+  skillChanges        AgentSkillChange[]
+  skillInstallations  AgentSkillInstallation[]
+  selfUpdatePolicies  AgentSkillSelfUpdatePolicy[]
 }
 
 model ModelProvider {
@@ -73,4 +138,99 @@ model ModelProvider {
   isDefault       Boolean           @default(false)
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
+}
+
+model AgentSkillSource {
+  id          String               @id @default(cuid())
+  sourceType  AgentSkillSourceType
+  label       String
+  registryKey String?
+  gitUrl      String?
+  isTrusted   Boolean              @default(true)
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  changes       AgentSkillChange[]
+  installations AgentSkillInstallation[]
+  policies      AgentSkillSelfUpdatePolicy[]
+}
+
+model AgentSkillInstallation {
+  id            String               @id @default(cuid())
+  agentId       String
+  skillName     String
+  sourceType    AgentSkillSourceType
+  sourceId      String
+  version       String
+  configVersion String
+  enabled       Boolean              @default(true)
+  systemRequired Boolean             @default(false)
+  selfUpdateAllowed Boolean          @default(false)
+  lastChangeId  String?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  agent  Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  source AgentSkillSource @relation(fields: [sourceId], references: [id])
+
+  @@unique([agentId, skillName])
+  @@index([agentId])
+  @@index([sourceId])
+}
+
+model AgentSkillChange {
+  id                    String                    @id @default(cuid())
+  actorType             AgentSkillActorType
+  actorId               String
+  targetAgentId         String
+  operation             AgentSkillOperation
+  skillName             String
+  sourceType            AgentSkillSourceType
+  sourceId              String?
+  requestedVersion      String?
+  resolvedVersion       String?
+  previousVersion       String?
+  previousConfigVersion String?
+  activeConfigVersion   String?
+  stagedConfigVersion   String?
+  changeStatus          AgentSkillChangeStatus    @default(pending)
+  reloadStatus          AgentSkillReloadStatus    @default(unknown)
+  auditStatus           AgentSkillAuditStatus     @default(audit_pending)
+  rollbackResult        AgentSkillRollbackResult  @default(not_required)
+  failedStage           AgentSkillFailedStage?
+  errorCode             String?
+  safeErrorSummary      String?
+  effectiveFor          String                    @default("next_task")
+  createdAt             DateTime                  @default(now())
+  finishedAt            DateTime?
+  updatedAt             DateTime                  @updatedAt
+
+  agent  Agent             @relation(fields: [targetAgentId], references: [id], onDelete: Cascade)
+  source AgentSkillSource? @relation(fields: [sourceId], references: [id])
+
+  @@index([targetAgentId, changeStatus])
+  @@index([targetAgentId, createdAt])
+  @@index([sourceId])
+}
+
+model AgentSkillSelfUpdatePolicy {
+  id                String               @id @default(cuid())
+  agentId           String
+  operation         AgentSkillOperation
+  skillName         String
+  sourceType        AgentSkillSourceType
+  sourceId          String
+  versionConstraint String
+  allowPrerelease   Boolean              @default(false)
+  allowLatest       Boolean              @default(false)
+  expiresAt         DateTime?
+  createdByAdminId  String
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  agent  Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  source AgentSkillSource @relation(fields: [sourceId], references: [id])
+
+  @@index([agentId, operation, skillName])
+  @@index([sourceId])
 }
