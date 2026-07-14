@@ -39,6 +39,11 @@ export interface StagedSkillsConfig {
   };
 }
 
+export interface WorkflowSourceWriteResult {
+  relativePath: string;
+  path: string;
+}
+
 const SECRET_IGNORE_RULES = ["**/.env", "**/.env.*", "**/*.secret", "**/secrets.local.*"];
 
 @Injectable()
@@ -191,6 +196,55 @@ export class AgentWorkspaceService {
     return this.isGitRepository() ? "available" : "unavailable";
   }
 
+  workflowSourceRelativePath(
+    agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">,
+    workflowKey: string,
+    extension: "ts" | "js" = "ts"
+  ): string {
+    this.assertSafeWorkflowKey(workflowKey);
+    this.assertSafeWorkflowExtension(extension);
+    const descriptor = this.descriptorFromAgent(agent);
+    const sourcePath = this.workflowSourcePath(descriptor, workflowKey, extension);
+    return relative(this.getRepoRoot(), sourcePath);
+  }
+
+  async writeWorkflowSource(
+    agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">,
+    workflowKey: string,
+    extension: "ts" | "js",
+    source: string
+  ): Promise<WorkflowSourceWriteResult> {
+    this.assertSafeWorkflowKey(workflowKey);
+    this.assertSafeWorkflowExtension(extension);
+    const descriptor = this.descriptorFromAgent(agent);
+    await this.assertWorkspaceRootChainSafe();
+    await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
+    const sourcePath = this.workflowSourcePath(descriptor, workflowKey, extension);
+    const sourceRoot = join(descriptor.workspacePath, "src", "mastra", "workflows");
+    this.assertInsideOrEqual(sourceRoot, sourcePath);
+    await mkdir(sourceRoot, { recursive: true });
+    await this.assertNoSymlinkEscape(descriptor.rootPath, sourceRoot);
+    const tempPath = join(sourceRoot, `${workflowKey}.${Date.now()}.tmp`);
+    await writeFile(tempPath, source, "utf8");
+    await rename(tempPath, sourcePath);
+    return {
+      path: sourcePath,
+      relativePath: relative(this.getRepoRoot(), sourcePath)
+    };
+  }
+
+  async readWorkflowSource(
+    agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">,
+    workflowKey: string,
+    extension: "ts" | "js"
+  ): Promise<string> {
+    this.assertSafeWorkflowKey(workflowKey);
+    this.assertSafeWorkflowExtension(extension);
+    const descriptor = this.descriptorFromAgent(agent);
+    const sourcePath = this.workflowSourcePath(descriptor, workflowKey, extension);
+    return readFile(sourcePath, "utf8");
+  }
+
   private descriptorFromAgent(agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">) {
     const rootPath = this.getWorkspaceRoot();
     const workspacePath = resolve(this.getRepoRoot(), agent.workspacePath);
@@ -201,6 +255,14 @@ export class AgentWorkspaceService {
       workspacePath,
       relativeWorkspacePath: agent.workspacePath
     };
+  }
+
+  private workflowSourcePath(
+    descriptor: Pick<AgentWorkspaceDescriptor, "workspacePath">,
+    workflowKey: string,
+    extension: "ts" | "js"
+  ) {
+    return join(descriptor.workspacePath, "src", "mastra", "workflows", `${workflowKey}.${extension}`);
   }
 
   private async writeGeneratedFiles(
@@ -429,6 +491,18 @@ export class AgentWorkspaceService {
   private assertSafeSegment(segment: string): void {
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*--[a-z0-9]{8}$/.test(segment)) {
       throw new Error("workspace name contains unsafe characters");
+    }
+  }
+
+  private assertSafeWorkflowKey(workflowKey: string): void {
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(workflowKey)) {
+      throw new Error("workflow key contains unsafe characters");
+    }
+  }
+
+  private assertSafeWorkflowExtension(extension: string): asserts extension is "ts" | "js" {
+    if (extension !== "ts" && extension !== "js") {
+      throw new Error("workflow extension must be ts or js");
     }
   }
 

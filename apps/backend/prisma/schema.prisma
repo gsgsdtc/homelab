@@ -84,6 +84,13 @@ enum AgentSkillFailedStage {
   concurrency_lock
 }
 
+enum WorkflowReloadStatus {
+  draft
+  loading
+  succeeded
+  failed
+}
+
 model User {
   id           String   @id @default(cuid())
   username     String   @unique
@@ -124,6 +131,7 @@ model Agent {
   skillChanges        AgentSkillChange[]
   skillInstallations  AgentSkillInstallation[]
   selfUpdatePolicies  AgentSkillSelfUpdatePolicy[]
+  workflows           AgentWorkflow[]
 }
 
 model ModelProvider {
@@ -233,4 +241,47 @@ model AgentSkillSelfUpdatePolicy {
 
   @@index([agentId, operation, skillName])
   @@index([sourceId])
+}
+
+model AgentWorkflow {
+  id          String               @id @default(cuid())
+  agentId     String
+  workflowKey String
+  extension   String               @default("ts")
+  relativePath String
+  draftHash   String?
+  activeHash  String?
+  revision    String?
+  reloadStatus WorkflowReloadStatus @default(draft)
+  reloadError  String?              @db.Text
+  loadedAt     DateTime?
+  updatedById  String?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  agent    Agent                  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  versions AgentWorkflowVersion[]
+
+  @@unique([agentId, workflowKey])
+  @@index([agentId, reloadStatus])
+}
+
+model AgentWorkflowVersion {
+  id                  String   @id @default(cuid())
+  workflowId          String
+  sourceHash          String
+  source              String   @db.Text
+  extension           String   @default("ts")
+  relativePath        String
+  createdById         String?
+  promotedAt          DateTime @default(now())
+  createdAt           DateTime @default(now())
+  rollbackOfVersionId String?
+
+  workflow          AgentWorkflow          @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  rollbackOfVersion AgentWorkflowVersion?  @relation("WorkflowRollback", fields: [rollbackOfVersionId], references: [id])
+  rollbackVersions  AgentWorkflowVersion[] @relation("WorkflowRollback")
+
+  @@index([workflowId, promotedAt])
+  @@index([workflowId, sourceHash])
 }

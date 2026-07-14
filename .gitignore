@@ -4,6 +4,7 @@ coverage
 .next
 .turbo
 *.tsbuildinfo
+.compiled-workflows
 .env
 *.log
 .DS_Store
