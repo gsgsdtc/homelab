@@ -52,9 +52,7 @@ describe("AgentWorkflowsService", () => {
     prisma.agentWorkflow.updateMany.mockResolvedValue({ count: 1 });
     prisma.$transaction.mockImplementation(async (callback: any) => callback(prisma));
     prisma.agentWorkflowVersion.findMany.mockResolvedValue([]);
-    workspaces.workflowSourceRelativePath.mockReturnValue(
-      ".homelab/agents/ops-agent--agent123/src/mastra/workflows/support-triage.ts"
-    );
+    workspaces.workflowSourceRelativePath.mockReturnValue(".homelab/agents/ops-agent--agent123/src/mastra/workflows/support-triage.ts");
     workspaces.writeWorkflowSource.mockResolvedValue({
       path: "/repo/.homelab/agents/ops-agent--agent123/src/mastra/workflows/support-triage.ts",
       relativePath: ".homelab/agents/ops-agent--agent123/src/mastra/workflows/support-triage.ts"
@@ -95,6 +93,35 @@ describe("AgentWorkflowsService", () => {
     expect(result.reloadStatus).toBe("draft");
   });
 
+  it("rejects non-ready collection POST without creating a draft", async () => {
+    prisma.agent.findUnique.mockResolvedValue(agent({ status: "initializing" }));
+    const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
+
+    await expect(
+      service.create("agent-1", {
+        workflowKey: "support-triage",
+        source: validSource("support-triage")
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: "AGENT_NOT_READY" })
+    });
+    expect(workspaces.writeWorkflowSource).not.toHaveBeenCalled();
+    expect(prisma.agentWorkflow.upsert).not.toHaveBeenCalled();
+  });
+
+  it("creates collection POST as revision 1 draft without activating it", async () => {
+    prisma.agentWorkflow.findUnique.mockResolvedValue(null);
+    prisma.agentWorkflow.upsert.mockImplementation(async ({ create }: any) =>
+      workflow({ ...create, editRevision: create.editRevision })
+    );
+    const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
+
+    await expect(
+      service.create("agent-1", { workflowKey: "support-triage", source: validSource("support-triage") })
+    ).resolves.toMatchObject({ revision: 1, reloadStatus: "draft", activeHash: null });
+    expect(runtime.reloadWorkflow).not.toHaveBeenCalled();
+  });
+
   it("rejects stale draft updates with a conflict", async () => {
     prisma.agentWorkflow.findUnique.mockResolvedValue(workflow({ draftHash: "current-draft" }));
     const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
@@ -111,9 +138,15 @@ describe("AgentWorkflowsService", () => {
   });
 
   it("promotes draft to active and records a version when reload succeeds", async () => {
-    const item = workflow({ draftHash: hashOf(validSource("support-triage")), activeHash: "active-v1" });
+    const item = workflow({
+      draftHash: hashOf(validSource("support-triage")),
+      activeHash: "active-v1"
+    });
     prisma.agentWorkflow.findFirst.mockResolvedValue(item);
-    runtime.reloadWorkflow.mockResolvedValue({ status: "succeeded", loadedAt: now });
+    runtime.reloadWorkflow.mockResolvedValue({
+      status: "succeeded",
+      loadedAt: now
+    });
     prisma.agentWorkflow.findFirst.mockResolvedValueOnce(item).mockResolvedValueOnce({
       ...item,
       activeHash: item.draftHash,
@@ -130,7 +163,9 @@ describe("AgentWorkflowsService", () => {
     workspaces.readWorkflowSource.mockResolvedValue(validSource("support-triage"));
     const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
 
-    const result = await service.reload("agent-1", "support-triage", { expectedDraftHash: item.draftHash });
+    const result = await service.reload("agent-1", "support-triage", {
+      expectedDraftHash: item.draftHash
+    });
 
     expect(runtime.reloadWorkflow).toHaveBeenCalledWith({
       agentId: "agent-1",
@@ -140,7 +175,11 @@ describe("AgentWorkflowsService", () => {
       extension: "ts"
     });
     expect(prisma.agentWorkflow.updateMany).toHaveBeenCalledWith({
-      where: { id: item.id, draftHash: item.draftHash, relativePath: item.relativePath },
+      where: {
+        id: item.id,
+        draftHash: item.draftHash,
+        relativePath: item.relativePath
+      },
       data: expect.objectContaining({
         activeHash: item.draftHash,
         reloadStatus: "succeeded"
@@ -158,7 +197,10 @@ describe("AgentWorkflowsService", () => {
   });
 
   it("promotes draft through the in-process Mastra reload adapter without a remote runtime URL", async () => {
-    const item = workflow({ draftHash: hashOf(validSource("support-triage")), activeHash: "active-v1" });
+    const item = workflow({
+      draftHash: hashOf(validSource("support-triage")),
+      activeHash: "active-v1"
+    });
     const hook = {
       reloadWorkflow: jest.fn().mockResolvedValue({ status: "succeeded", loadedAt: now })
     };
@@ -179,7 +221,9 @@ describe("AgentWorkflowsService", () => {
     workspaces.readWorkflowSource.mockResolvedValue(validSource("support-triage"));
     const service = new AgentWorkflowsService(prisma, workspaces, validator, inProcessRuntime);
 
-    const result = await service.reload("agent-1", "support-triage", { expectedDraftHash: item.draftHash });
+    const result = await service.reload("agent-1", "support-triage", {
+      expectedDraftHash: item.draftHash
+    });
 
     expect(hook.reloadWorkflow).toHaveBeenCalledWith({
       agentId: "agent-1",
@@ -189,7 +233,11 @@ describe("AgentWorkflowsService", () => {
       extension: "ts"
     });
     expect(prisma.agentWorkflow.updateMany).toHaveBeenCalledWith({
-      where: { id: item.id, draftHash: item.draftHash, relativePath: item.relativePath },
+      where: {
+        id: item.id,
+        draftHash: item.draftHash,
+        relativePath: item.relativePath
+      },
       data: expect.objectContaining({
         activeHash: item.draftHash,
         reloadStatus: "succeeded"
@@ -200,19 +248,31 @@ describe("AgentWorkflowsService", () => {
   });
 
   it("does not promote when the draft changes while runtime reload is in flight", async () => {
-    const item = workflow({ draftHash: hashOf(validSource("support-triage", "v2")), activeHash: "active-v1" });
+    const item = workflow({
+      draftHash: hashOf(validSource("support-triage", "v2")),
+      activeHash: "active-v1"
+    });
     prisma.agentWorkflow.findFirst.mockResolvedValue(item);
-    runtime.reloadWorkflow.mockResolvedValue({ status: "succeeded", loadedAt: now });
+    runtime.reloadWorkflow.mockResolvedValue({
+      status: "succeeded",
+      loadedAt: now
+    });
     workspaces.readWorkflowSource.mockResolvedValue(validSource("support-triage", "v2"));
     prisma.agentWorkflow.updateMany.mockResolvedValue({ count: 0 });
     const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
 
-    await expect(service.reload("agent-1", "support-triage", { expectedDraftHash: item.draftHash })).rejects.toThrow(
-      ConflictException
-    );
+    await expect(
+      service.reload("agent-1", "support-triage", {
+        expectedDraftHash: item.draftHash
+      })
+    ).rejects.toThrow(ConflictException);
 
     expect(prisma.agentWorkflow.updateMany).toHaveBeenCalledWith({
-      where: { id: item.id, draftHash: item.draftHash, relativePath: item.relativePath },
+      where: {
+        id: item.id,
+        draftHash: item.draftHash,
+        relativePath: item.relativePath
+      },
       data: expect.objectContaining({ activeHash: item.draftHash })
     });
     expect(prisma.agentWorkflowVersion.create).not.toHaveBeenCalled();
@@ -224,7 +284,10 @@ describe("AgentWorkflowsService", () => {
     const item = workflow({ draftHash, activeHash: "active-v1" });
     prisma.agentWorkflow.findFirst.mockResolvedValue(item);
     workspaces.readWorkflowSource.mockResolvedValue(source);
-    runtime.reloadWorkflow.mockResolvedValue({ status: "failed", error: "compile failed at /private/path token sk-secret1234567890" });
+    runtime.reloadWorkflow.mockResolvedValue({
+      status: "failed",
+      error: "compile failed at /private/path token sk-secret1234567890"
+    });
     prisma.agentWorkflow.update.mockResolvedValue({
       ...item,
       reloadStatus: "failed",
@@ -232,7 +295,9 @@ describe("AgentWorkflowsService", () => {
     });
     const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
 
-    const result = await service.reload("agent-1", "support-triage", { expectedDraftHash: draftHash });
+    const result = await service.reload("agent-1", "support-triage", {
+      expectedDraftHash: draftHash
+    });
 
     expect(prisma.agentWorkflowVersion.create).not.toHaveBeenCalled();
     expect(result.activeHash).toBe("active-v1");
@@ -244,7 +309,11 @@ describe("AgentWorkflowsService", () => {
   it("retries the same failed draft and promotes it after runtime recovers", async () => {
     const source = validSource("support-triage", "v2");
     const draftHash = hashOf(source);
-    const item = workflow({ draftHash, activeHash: "active-v1", reloadStatus: "failed" });
+    const item = workflow({
+      draftHash,
+      activeHash: "active-v1",
+      reloadStatus: "failed"
+    });
     prisma.agentWorkflow.findFirst.mockResolvedValueOnce(item).mockResolvedValueOnce({
       ...item,
       activeHash: draftHash,
@@ -252,11 +321,16 @@ describe("AgentWorkflowsService", () => {
       reloadError: null,
       loadedAt: now
     });
-    runtime.reloadWorkflow.mockResolvedValue({ status: "succeeded", loadedAt: now });
+    runtime.reloadWorkflow.mockResolvedValue({
+      status: "succeeded",
+      loadedAt: now
+    });
     workspaces.readWorkflowSource.mockResolvedValue(source);
     const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
 
-    const result = await service.reload("agent-1", "support-triage", { expectedDraftHash: draftHash });
+    const result = await service.reload("agent-1", "support-triage", {
+      expectedDraftHash: draftHash
+    });
 
     expect(runtime.reloadWorkflow).toHaveBeenCalledWith(expect.objectContaining({ sourceHash: draftHash }));
     expect(prisma.agentWorkflowVersion.create).toHaveBeenCalledWith({
@@ -282,14 +356,19 @@ describe("AgentWorkflowsService", () => {
       "eyJsecretpayload.eyJsecretpayload",
       "-----BEGIN PRIVATE KEY-----"
     ].join(" ");
-    runtime.reloadWorkflow.mockResolvedValue({ status: "failed", error: rawError });
+    runtime.reloadWorkflow.mockResolvedValue({
+      status: "failed",
+      error: rawError
+    });
     prisma.agentWorkflow.update.mockImplementation(async ({ data }: any) => ({
       ...item,
       ...data
     }));
     const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
 
-    const result = await service.reload("agent-1", "support-triage", { expectedDraftHash: draftHash });
+    const result = await service.reload("agent-1", "support-triage", {
+      expectedDraftHash: draftHash
+    });
 
     expect(result.error?.message).not.toContain("/Users/alice");
     expect(result.error?.message).not.toContain("/home/app");
@@ -302,16 +381,22 @@ describe("AgentWorkflowsService", () => {
   });
 
   it("rolls back by writing the historical version as draft and reloading it", async () => {
-    const current = workflow({ draftHash: "draft-v2", activeHash: "active-v2" });
-    prisma.agentWorkflow.findFirst.mockResolvedValueOnce(current).mockResolvedValueOnce({
-      ...current,
-      draftHash: hashOf(validSource("support-triage", "v1"))
-    }).mockResolvedValueOnce({
-      ...current,
-      draftHash: hashOf(validSource("support-triage", "v1")),
-      activeHash: hashOf(validSource("support-triage", "v1")),
-      reloadStatus: "succeeded"
+    const current = workflow({
+      draftHash: "draft-v2",
+      activeHash: "active-v2"
     });
+    prisma.agentWorkflow.findFirst
+      .mockResolvedValueOnce(current)
+      .mockResolvedValueOnce({
+        ...current,
+        draftHash: hashOf(validSource("support-triage", "v1"))
+      })
+      .mockResolvedValueOnce({
+        ...current,
+        draftHash: hashOf(validSource("support-triage", "v1")),
+        activeHash: hashOf(validSource("support-triage", "v1")),
+        reloadStatus: "succeeded"
+      });
     prisma.agentWorkflowVersion.findUnique.mockResolvedValue({
       id: "version-1",
       workflowId: current.id,
@@ -324,12 +409,17 @@ describe("AgentWorkflowsService", () => {
       draftHash: hashOf(validSource("support-triage", "v1")),
       reloadStatus: "draft"
     });
-    runtime.reloadWorkflow.mockResolvedValue({ status: "succeeded", loadedAt: now });
+    runtime.reloadWorkflow.mockResolvedValue({
+      status: "succeeded",
+      loadedAt: now
+    });
     prisma.agentWorkflowVersion.create.mockResolvedValue({ id: "version-3" });
     workspaces.readWorkflowSource.mockResolvedValue(validSource("support-triage", "v1"));
     const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
 
-    const result = await service.rollback("agent-1", "support-triage", { versionId: "version-1" });
+    const result = await service.rollback("agent-1", "support-triage", {
+      versionId: "version-1"
+    });
 
     expect(workspaces.writeWorkflowSource).toHaveBeenCalledWith(agent(), "support-triage", "ts", validSource("support-triage", "v1"));
     expect(prisma.agentWorkflowVersion.create).toHaveBeenCalledWith({
@@ -345,9 +435,7 @@ describe("AgentWorkflowsService", () => {
     prisma.agentWorkflowVersion.findUnique.mockResolvedValue(null);
     const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
 
-    await expect(service.rollback("agent-1", "support-triage", { versionId: "missing" })).rejects.toThrow(
-      NotFoundException
-    );
+    await expect(service.rollback("agent-1", "support-triage", { versionId: "missing" })).rejects.toThrow(NotFoundException);
 
     expect(workspaces.writeWorkflowSource).not.toHaveBeenCalled();
     expect(runtime.reloadWorkflow).not.toHaveBeenCalled();
@@ -355,7 +443,10 @@ describe("AgentWorkflowsService", () => {
   });
 
   it("keeps active unchanged and preserves rollback draft when rollback reload fails", async () => {
-    const current = workflow({ draftHash: "draft-v2", activeHash: "active-v2" });
+    const current = workflow({
+      draftHash: "draft-v2",
+      activeHash: "active-v2"
+    });
     const rollbackSource = validSource("support-triage", "v1");
     const rollbackHash = hashOf(rollbackSource);
     prisma.agentWorkflow.findFirst.mockResolvedValueOnce(current).mockResolvedValueOnce({
@@ -369,13 +460,26 @@ describe("AgentWorkflowsService", () => {
       source: rollbackSource,
       extension: "ts"
     });
-    prisma.agentWorkflow.upsert.mockResolvedValue({ ...current, draftHash: rollbackHash, reloadStatus: "draft" });
-    runtime.reloadWorkflow.mockResolvedValue({ status: "failed", error: "rollback compile failed" });
-    prisma.agentWorkflow.update.mockImplementation(async ({ data }: any) => ({ ...current, ...data, draftHash: rollbackHash }));
+    prisma.agentWorkflow.upsert.mockResolvedValue({
+      ...current,
+      draftHash: rollbackHash,
+      reloadStatus: "draft"
+    });
+    runtime.reloadWorkflow.mockResolvedValue({
+      status: "failed",
+      error: "rollback compile failed"
+    });
+    prisma.agentWorkflow.update.mockImplementation(async ({ data }: any) => ({
+      ...current,
+      ...data,
+      draftHash: rollbackHash
+    }));
     workspaces.readWorkflowSource.mockResolvedValue(rollbackSource);
     const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
 
-    const result = await service.rollback("agent-1", "support-triage", { versionId: "version-1" });
+    const result = await service.rollback("agent-1", "support-triage", {
+      versionId: "version-1"
+    });
 
     expect(result.activeHash).toBe("active-v2");
     expect(result.draftHash).toBe(rollbackHash);
@@ -393,12 +497,17 @@ describe("AgentWorkflowsService", () => {
       reloadStatus: "succeeded",
       loadedAt: now
     });
-    runtime.reloadWorkflow.mockResolvedValue({ status: "succeeded", loadedAt: now });
+    runtime.reloadWorkflow.mockResolvedValue({
+      status: "succeeded",
+      loadedAt: now
+    });
     prisma.agentWorkflowVersion.findMany.mockResolvedValue([{ id: "version-old" }, { id: "version-active", sourceHash: draftHash }]);
     workspaces.readWorkflowSource.mockResolvedValue(source);
     const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
 
-    await service.reload("agent-1", "support-triage", { expectedDraftHash: draftHash });
+    await service.reload("agent-1", "support-triage", {
+      expectedDraftHash: draftHash
+    });
 
     expect(prisma.agentWorkflowVersion.deleteMany).toHaveBeenCalledWith({
       where: { id: { in: ["version-old"] } }
@@ -446,6 +555,7 @@ function agent(overrides: Record<string, unknown> = {}) {
     slug: "ops-agent",
     workspaceName: "ops-agent--agent123",
     workspacePath: ".homelab/agents/ops-agent--agent123",
+    status: "ready",
     ...overrides
   };
 }

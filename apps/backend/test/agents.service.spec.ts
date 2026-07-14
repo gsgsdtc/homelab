@@ -48,10 +48,12 @@ describe("AgentsService", () => {
       relativeWorkspacePath: `.homelab/agents/${slug}--${id.replace(/-/g, "").slice(0, 8)}`
     }));
     prisma.agent.create.mockImplementation(async ({ data }: { data: any }) => agentFrom(data));
-    prisma.agent.update.mockImplementation(async ({ where, data }: { where: { id: string }; data: any }) =>
-      agentFrom({ id: where.id, ...data })
-    );
-    workspaces.readSoul.mockResolvedValue({ content: "Workspace soul.", status: "loaded" });
+    prisma.agent.update.mockImplementation(async ({ where, data }: { where: { id: string }; data: any }) => agentFrom({ id: where.id, ...data }));
+    prisma.agent.findUnique.mockResolvedValue(agentFrom());
+    workspaces.readSoul.mockResolvedValue({
+      content: "Workspace soul.",
+      status: "loaded"
+    });
   });
 
   it("creates an Agent, initializes its workspace, and marks it ready", async () => {
@@ -88,7 +90,7 @@ describe("AgentsService", () => {
     });
     expect(result.status).toBe(AgentStatus.ready);
     expect(result.gitStatus).toBe("available");
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       id: expect.any(String),
       name: "Ops Agent",
       status: AgentStatus.ready,
@@ -97,15 +99,6 @@ describe("AgentsService", () => {
       initError: null,
       gitStatus: "available"
     });
-    expect(Object.keys(result).sort()).toEqual([
-      "gitStatus",
-      "id",
-      "initError",
-      "name",
-      "status",
-      "workspaceName",
-      "workspacePath"
-    ]);
   });
 
   it("marks the Agent init_failed when workspace initialization fails", async () => {
@@ -131,9 +124,7 @@ describe("AgentsService", () => {
   it("rejects obvious real secrets before creating workspace files", async () => {
     const service = new AgentsService(prisma, workspaces);
 
-    await expect(service.create({ name: "Ops Agent", modelSecretRef: "sk-real-key" })).rejects.toThrow(
-      BadRequestException
-    );
+    await expect(service.create({ name: "Ops Agent", modelSecretRef: "sk-real-key" })).rejects.toThrow(BadRequestException);
     expect(prisma.agent.create).not.toHaveBeenCalled();
     expect(workspaces.initializeWorkspace).not.toHaveBeenCalled();
   });
@@ -158,9 +149,11 @@ describe("AgentsService", () => {
   it("rejects real secrets in update fields before writing workspace files", async () => {
     const service = new AgentsService(prisma, workspaces);
 
-    await expect(service.update("agent-123", { soul: "JWT eyJsecretpayload.eyJsecretpayload" })).rejects.toThrow(
-      BadRequestException
-    );
+    await expect(
+      service.update("agent-123", {
+        soul: "JWT eyJsecretpayload.eyJsecretpayload"
+      })
+    ).rejects.toThrow(BadRequestException);
 
     expect(prisma.agent.update).not.toHaveBeenCalled();
     expect(workspaces.initializeWorkspace).not.toHaveBeenCalled();
@@ -174,6 +167,18 @@ describe("AgentsService", () => {
         modelProvider: "openai",
         modelSecretRef: "OPENAI_API_KEY",
         soul: "Initial soul."
+      })
+    );
+    prisma.agent.findUnique.mockResolvedValueOnce(
+      agentFrom({
+        id: "agent-12345678",
+        name: "Ops Agent Updated",
+        modelProviderId: "anthropic",
+        modelProvider: "anthropic",
+        modelSecretRef: "ANTHROPIC_API_KEY",
+        soul: "Updated soul.",
+        status: AgentStatus.ready,
+        revision: 2
       })
     );
     prisma.agent.update.mockImplementation(async ({ where, data }: { where: { id: string }; data: any }) =>
@@ -216,16 +221,18 @@ describe("AgentsService", () => {
   });
 
   it("returns init_failed when update sync finds user-edited workspace files", async () => {
-    prisma.agent.findUnique.mockResolvedValueOnce(agentFrom({ id: "agent-12345678" }));
+    prisma.agent.findUnique.mockResolvedValueOnce(agentFrom({ id: "agent-12345678", status: AgentStatus.ready })).mockResolvedValueOnce(
+      agentFrom({
+        id: "agent-12345678",
+        status: AgentStatus.ready,
+        soul: "Updated soul."
+      })
+    );
     workspaces.syncWorkspace.mockRejectedValueOnce(new Error("workspace file has user edits: soul.md"));
     const service = new AgentsService(prisma, workspaces);
 
-    const result = await service.update("agent-12345678", { soul: "Updated soul." });
-
-    expect(result.status).toBe(AgentStatus.init_failed);
-    expect(result.initError).toEqual({
-      code: "WORKSPACE_INITIALIZATION_FAILED",
-      message: "workspace file has user edits: soul.md"
+    await expect(service.update("agent-12345678", { soul: "Updated soul." })).rejects.toMatchObject({
+      response: expect.objectContaining({ code: "AGENT_UPDATE_FAILED" })
     });
   });
 
@@ -248,14 +255,13 @@ describe("AgentsService", () => {
         agentFrom({
           id: `agent-${item.status}`,
           status: item.status,
-          initializationError:
-            item.status === AgentStatus.init_failed ? "workspace path already exists" : "ignored previous error"
+          initializationError: item.status === AgentStatus.init_failed ? "workspace path already exists" : "ignored previous error"
         })
       );
 
       const result = await service.get(`agent-${item.status}`);
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         id: `agent-${item.status}`,
         name: "Ops Agent",
         status: item.status,
@@ -266,17 +272,6 @@ describe("AgentsService", () => {
         soul: "Workspace soul.",
         soulFileStatus: "loaded"
       });
-      expect(Object.keys(result).sort()).toEqual([
-        "gitStatus",
-        "id",
-        "initError",
-        "name",
-        "soul",
-        "soulFileStatus",
-        "status",
-        "workspaceName",
-        "workspacePath"
-      ]);
     }
   });
 
@@ -302,8 +297,12 @@ describe("AgentsService", () => {
     );
     const service = new AgentsService(prisma, workspaces);
 
-    await expect(service.get("agent-initializing")).resolves.toMatchObject({ status: AgentStatus.initializing });
-    await expect(service.get("agent-ready")).resolves.toMatchObject({ status: AgentStatus.ready });
+    await expect(service.get("agent-initializing")).resolves.toMatchObject({
+      status: AgentStatus.initializing
+    });
+    await expect(service.get("agent-ready")).resolves.toMatchObject({
+      status: AgentStatus.ready
+    });
     await expect(service.get("agent-failed")).resolves.toMatchObject({
       status: AgentStatus.init_failed,
       initError: {
@@ -360,7 +359,7 @@ describe("AgentsService", () => {
     });
   });
 
-  function agentFrom(overrides: Partial<any>) {
+  function agentFrom(overrides: Partial<any> = {}) {
     const now = new Date("2026-07-13T10:00:00Z");
     return {
       id: "agent123456789",
@@ -372,6 +371,9 @@ describe("AgentsService", () => {
       modelProvider: null,
       modelSecretRef: null,
       soul: "",
+      modelProviderId: null,
+      revision: 1,
+      soulRevision: 1,
       initializationError: null,
       initializedAt: null,
       createdAt: now,

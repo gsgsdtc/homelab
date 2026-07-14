@@ -5,6 +5,7 @@ import { ConfigService } from "@nestjs/config";
 import { join, relative, resolve, sep } from "path";
 import { Agent } from "@prisma/client";
 import { createHash } from "crypto";
+import { execFileSync } from "child_process";
 import { AgentSkillMutation, SkillConfigEntry } from "./agent-skill-types";
 
 export interface AgentWorkspaceDescriptor {
@@ -20,8 +21,9 @@ export interface InitializeWorkspaceInput {
   slug: string;
   workspaceName: string;
   workspacePath: string;
-  modelProvider: string | null;
-  modelSecretRef: string | null;
+  modelProviderId?: string | null;
+  modelProvider?: string | null;
+  modelSecretRef?: string | null;
   soul: string;
 }
 
@@ -75,11 +77,7 @@ export class AgentWorkspaceService {
     };
   }
 
-  async ensurePathAvailable(
-    descriptor: AgentWorkspaceDescriptor,
-    currentAgent?: Pick<Agent, "workspacePath">,
-    options: InitializeWorkspaceOptions = {}
-  ) {
+  async ensurePathAvailable(descriptor: AgentWorkspaceDescriptor, currentAgent?: Pick<Agent, "workspacePath">, options: InitializeWorkspaceOptions = {}) {
     await this.assertWorkspaceRootChainSafe();
     await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
 
@@ -91,11 +89,7 @@ export class AgentWorkspaceService {
       if (!stat.isDirectory()) {
         throw new Error("workspace path exists and is not a directory");
       }
-      if (
-        !options.allowExistingWorkspace ||
-        !currentAgent ||
-        currentAgent.workspacePath !== descriptor.relativeWorkspacePath
-      ) {
+      if (!options.allowExistingWorkspace || !currentAgent || currentAgent.workspacePath !== descriptor.relativeWorkspacePath) {
         throw new Error("workspace path already exists");
       }
     } catch (error) {
@@ -113,7 +107,9 @@ export class AgentWorkspaceService {
     await mkdir(descriptor.workspacePath, { recursive: true });
     await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
     await mkdir(join(descriptor.workspacePath, "skills"), { recursive: true });
-    await mkdir(join(descriptor.workspacePath, "workflows"), { recursive: true });
+    await mkdir(join(descriptor.workspacePath, "workflows"), {
+      recursive: true
+    });
     await this.writeGeneratedFiles(agent, descriptor, options, options.previousAgent);
     await this.ensureAgentsGitignore(descriptor.rootPath);
   }
@@ -133,10 +129,7 @@ export class AgentWorkspaceService {
     return this.parseManagedSkills(content);
   }
 
-  async stageSkillsConfig(
-    agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">,
-    mutation: AgentSkillMutation
-  ): Promise<StagedSkillsConfig> {
+  async stageSkillsConfig(agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">, mutation: AgentSkillMutation): Promise<StagedSkillsConfig> {
     const descriptor = this.descriptorFromAgent(agent);
     await this.assertWorkspaceRootChainSafe();
     await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
@@ -145,13 +138,7 @@ export class AgentWorkspaceService {
     const skills = this.applySkillMutation(mutation);
     const content = this.serializeSkills(skills);
     const stagedConfigVersion = this.buildConfigVersion(content);
-    const stagingPath = join(
-      descriptor.workspacePath,
-      ".skills-state",
-      "staging",
-      mutation.changeId,
-      "skills.yaml"
-    );
+    const stagingPath = join(descriptor.workspacePath, ".skills-state", "staging", mutation.changeId, "skills.yaml");
     await mkdir(join(stagingPath, ".."), { recursive: true });
     await writeFile(stagingPath, content, "utf8");
 
@@ -201,8 +188,18 @@ export class AgentWorkspaceService {
     return { activeConfigVersion: previousConfigVersion };
   }
 
-  getGitStatus(): "available" | "unavailable" {
-    return this.isGitRepository() ? "available" : "unavailable";
+  getGitStatus(agent?: Pick<InitializeWorkspaceInput, "workspacePath">): "clean" | "dirty" | "unavailable" {
+    if (!this.isGitRepository() || !agent) return "unavailable";
+    try {
+      const output = execFileSync("git", ["status", "--porcelain", "--", agent.workspacePath], {
+        cwd: this.getRepoRoot(),
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"]
+      });
+      return output.trim() ? "dirty" : "clean";
+    } catch {
+      return "unavailable";
+    }
   }
 
   workflowSourceRelativePath(
@@ -285,10 +282,7 @@ export class AgentWorkspaceService {
     return soul.content;
   }
 
-  async writeSoul(
-    agent: Pick<InitializeWorkspaceInput, "name" | "workspaceName" | "workspacePath">,
-    content: string
-  ): Promise<void> {
+  async writeSoul(agent: Pick<InitializeWorkspaceInput, "name" | "workspaceName" | "workspacePath">, content: string): Promise<void> {
     const descriptor = this.descriptorFromAgent(agent);
     await this.assertWorkspaceRootChainSafe();
     await mkdir(descriptor.workspacePath, { recursive: true });
@@ -328,11 +322,7 @@ export class AgentWorkspaceService {
     };
   }
 
-  private workflowSourcePath(
-    descriptor: Pick<AgentWorkspaceDescriptor, "workspacePath">,
-    workflowKey: string,
-    extension: "ts" | "js"
-  ) {
+  private workflowSourcePath(descriptor: Pick<AgentWorkspaceDescriptor, "workspacePath">, workflowKey: string, extension: "ts" | "js") {
     return join(descriptor.workspacePath, "src", "mastra", "workflows", `${workflowKey}.${extension}`);
   }
 
@@ -344,24 +334,14 @@ export class AgentWorkspaceService {
   ) {
     const previousDescriptor = previousAgent ? this.descriptorFromAgent(previousAgent) : undefined;
     const generatedFiles = this.buildGeneratedFiles(agent, descriptor);
-    const previousGeneratedFiles =
-      previousAgent && previousDescriptor ? this.buildGeneratedFiles(previousAgent, previousDescriptor) : new Map();
+    const previousGeneratedFiles = previousAgent && previousDescriptor ? this.buildGeneratedFiles(previousAgent, previousDescriptor) : new Map();
 
     for (const [relativePath, content] of generatedFiles) {
-      await this.writeGeneratedFile(
-        join(descriptor.workspacePath, relativePath),
-        content,
-        options,
-        previousGeneratedFiles.get(relativePath),
-        relativePath
-      );
+      await this.writeGeneratedFile(join(descriptor.workspacePath, relativePath), content, options, previousGeneratedFiles.get(relativePath), relativePath);
     }
   }
 
-  private buildGeneratedFiles(
-    agent: InitializeWorkspaceInput,
-    descriptor: AgentWorkspaceDescriptor
-  ): Map<string, string> {
+  private buildGeneratedFiles(agent: InitializeWorkspaceInput, descriptor: AgentWorkspaceDescriptor): Map<string, string> {
     const files = new Map<string, string>();
     files.set("agent.yaml", this.buildAgentYaml(agent, descriptor));
     files.set(SOUL_FILE_NAME, agent.soul || this.buildDefaultSoul(agent));
@@ -454,7 +434,9 @@ export class AgentWorkspaceService {
     if (!(await this.pathExists(activePath))) {
       return null;
     }
-    const active = JSON.parse(await readFile(activePath, "utf8")) as { activeConfigVersion?: string | null };
+    const active = JSON.parse(await readFile(activePath, "utf8")) as {
+      activeConfigVersion?: string | null;
+    };
     return active.activeConfigVersion ?? null;
   }
 
@@ -474,19 +456,12 @@ export class AgentWorkspaceService {
       `slug: ${agent.slug}`,
       `workspacePath: ${descriptor.relativeWorkspacePath}`,
       "model:",
-      `  provider: ${agent.modelProvider ? this.quoteYaml(agent.modelProvider) : "null"}`,
-      `  secretRef: ${agent.modelSecretRef ?? "null"}`,
+      `  providerId: ${(agent.modelProviderId ?? agent.modelProvider) ? this.quoteYaml(agent.modelProviderId ?? agent.modelProvider ?? "") : "null"}`,
       ""
     ].join("\n");
   }
 
-  private async writeGeneratedFile(
-    path: string,
-    content: string,
-    options: InitializeWorkspaceOptions,
-    previousContent?: string,
-    relativePath = path
-  ) {
+  private async writeGeneratedFile(path: string, content: string, options: InitializeWorkspaceOptions, previousContent?: string, relativePath = path) {
     if (!(await this.pathExists(path))) {
       await writeFile(path, content, "utf8");
       return;
@@ -526,9 +501,8 @@ export class AgentWorkspaceService {
     await writeFile(join(rootPath, ".gitignore"), `${SECRET_IGNORE_RULES.join("\n")}\n`, "utf8");
   }
 
-  private buildSecretsExample(agent: InitializeWorkspaceInput): string {
-    const ref = agent.modelSecretRef ?? "MODEL_API_KEY";
-    return ["# Real secret values must stay outside Git-tracked files.", `${ref}=`, ""].join("\n");
+  private buildSecretsExample(_agent: InitializeWorkspaceInput): string {
+    return ["# Provider credentials are managed only by the backend Provider store.", ""].join("\n");
   }
 
   private buildReadme(agent: InitializeWorkspaceInput, descriptor: AgentWorkspaceDescriptor): string {
@@ -539,7 +513,7 @@ export class AgentWorkspaceService {
       "",
       "This directory stores Git-trackable Agent configuration only.",
       "Do not write API keys, tokens, private keys, cookies, passwords, or other real secrets here.",
-      "Use `secretRef` values in configuration and provide real values through environment variables or the backend secret provider.",
+      "Provider credentials are resolved by the backend and must never be copied into this workspace.",
       "",
       "Generated files:",
       "",
@@ -568,10 +542,7 @@ export class AgentWorkspaceService {
     return join(descriptor.workspacePath, SOUL_FILE_NAME);
   }
 
-  private async assertSoulPathSafe(
-    descriptor: AgentWorkspaceDescriptor,
-    options: { allowMissingFile?: boolean } = {}
-  ): Promise<void> {
+  private async assertSoulPathSafe(descriptor: AgentWorkspaceDescriptor, options: { allowMissingFile?: boolean } = {}): Promise<void> {
     await this.assertWorkspaceRootChainSafe();
     await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
     const soulPath = this.soulPath(descriptor);

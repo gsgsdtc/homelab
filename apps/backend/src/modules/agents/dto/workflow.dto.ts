@@ -1,4 +1,4 @@
-import { IsIn, IsOptional, IsString, Matches, MaxLength } from "class-validator";
+import { IsIn, IsInt, IsOptional, IsString, Matches, MaxLength, Min } from "class-validator";
 
 export class WorkflowSourceDto {
   @IsString()
@@ -9,8 +9,9 @@ export class WorkflowSourceDto {
   extension?: "ts" | "js";
 
   @IsOptional()
-  @IsString()
-  expectedRevision?: string;
+  @IsInt()
+  @Min(1)
+  expectedRevision?: number | string;
 }
 
 export class CreateWorkflowDto extends WorkflowSourceDto {

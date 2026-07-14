@@ -35,24 +35,14 @@ describe("AgentWorkspaceService", () => {
       { allowExistingWorkspace: false }
     );
 
-    await expect(readFile(join(descriptor.workspacePath, "agent.yaml"), "utf8")).resolves.toContain(
-      "secretRef: OPENAI_API_KEY"
-    );
-    await expect(readFile(join(descriptor.workspacePath, "soul.md"), "utf8")).resolves.toBe(
-      "Keep production stable."
-    );
-    await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toBe(
-      "skills: []\n"
-    );
-    await expect(readFile(join(descriptor.workspacePath, "workflows", "workflow.yaml"), "utf8")).resolves.toBe(
-      "workflows: []\n"
-    );
+    await expect(readFile(join(descriptor.workspacePath, "agent.yaml"), "utf8")).resolves.toContain('providerId: "openai"');
+    await expect(readFile(join(descriptor.workspacePath, "soul.md"), "utf8")).resolves.toBe("Keep production stable.");
+    await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toBe("skills: []\n");
+    await expect(readFile(join(descriptor.workspacePath, "workflows", "workflow.yaml"), "utf8")).resolves.toBe("workflows: []\n");
     await expect(readFile(join(descriptor.workspacePath, "secrets.example.env"), "utf8")).resolves.toContain(
-      "OPENAI_API_KEY="
+      "Provider credentials are managed only by the backend Provider store"
     );
-    await expect(readFile(join(repoRoot, ".homelab", "agents", ".gitignore"), "utf8")).resolves.toBe(
-      "**/.env\n**/.env.*\n**/*.secret\n**/secrets.local.*\n"
-    );
+    await expect(readFile(join(repoRoot, ".homelab", "agents", ".gitignore"), "utf8")).resolves.toBe("**/.env\n**/.env.*\n**/*.secret\n**/secrets.local.*\n");
   });
 
   it("keeps soul and workflow workspace capabilities available after baseline integration", async () => {
@@ -109,9 +99,9 @@ describe("AgentWorkspaceService", () => {
       currentSkills: []
     });
     await service.commitSkillsConfig(agent, "change-1", first.stagedConfigVersion);
-    await expect(
-      readFile(join(descriptor.workspacePath, ".skills-state", "versions", first.stagedConfigVersion, "skills.yaml"), "utf8")
-    ).resolves.toContain('version: "1.0.0"');
+    await expect(readFile(join(descriptor.workspacePath, ".skills-state", "versions", first.stagedConfigVersion, "skills.yaml"), "utf8")).resolves.toContain(
+      'version: "1.0.0"'
+    );
 
     const second = await service.stageSkillsConfig(agent, {
       changeId: "change-2",
@@ -135,12 +125,10 @@ describe("AgentWorkspaceService", () => {
     });
     await service.commitSkillsConfig(agent, "change-2", second.stagedConfigVersion);
 
-    await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toContain(
-      'version: "1.0.1"'
+    await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toContain('version: "1.0.1"');
+    await expect(readFile(join(descriptor.workspacePath, ".skills-state", "versions", first.stagedConfigVersion, "skills.yaml"), "utf8")).resolves.toContain(
+      'version: "1.0.0"'
     );
-    await expect(
-      readFile(join(descriptor.workspacePath, ".skills-state", "versions", first.stagedConfigVersion, "skills.yaml"), "utf8")
-    ).resolves.toContain('version: "1.0.0"');
 
     const third = await service.stageSkillsConfig(agent, {
       changeId: "change-3",
@@ -162,18 +150,14 @@ describe("AgentWorkspaceService", () => {
     });
     await service.commitSkillsConfig(agent, "change-3", third.stagedConfigVersion);
 
-    await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toBe(
-      "skills: []\n"
+    await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toBe("skills: []\n");
+    await expect(readFile(join(descriptor.workspacePath, ".skills-state", "versions", second.stagedConfigVersion, "skills.yaml"), "utf8")).resolves.toContain(
+      'version: "1.0.1"'
     );
-    await expect(
-      readFile(join(descriptor.workspacePath, ".skills-state", "versions", second.stagedConfigVersion, "skills.yaml"), "utf8")
-    ).resolves.toContain('version: "1.0.1"');
 
     await service.rollbackSkillsConfig(agent, "change-3", third.previousConfigVersion);
 
-    await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toContain(
-      'version: "1.0.1"'
-    );
+    await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toContain('version: "1.0.1"');
   });
 
   it("rejects an existing unbound workspace path during first initialization", async () => {
@@ -323,12 +307,8 @@ describe("AgentWorkspaceService", () => {
     );
 
     await expect(readFile(join(descriptor.workspacePath, "soul.md"), "utf8")).resolves.toBe("User edited soul.\n");
-    await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toBe(
-      "skills:\n  - user-skill\n"
-    );
-    await expect(readFile(join(descriptor.workspacePath, "workflows", "workflow.yaml"), "utf8")).resolves.toBe(
-      "workflows: []\n"
-    );
+    await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toBe("skills:\n  - user-skill\n");
+    await expect(readFile(join(descriptor.workspacePath, "workflows", "workflow.yaml"), "utf8")).resolves.toBe("workflows: []\n");
   });
 
   it("syncs updated generated files when they have not been edited by a user", async () => {
@@ -343,7 +323,9 @@ describe("AgentWorkspaceService", () => {
       modelSecretRef: "OPENAI_API_KEY",
       soul: "Initial soul."
     };
-    await service.initializeWorkspace(previousAgent, { allowExistingWorkspace: false });
+    await service.initializeWorkspace(previousAgent, {
+      allowExistingWorkspace: false
+    });
 
     await service.syncWorkspace(
       {
@@ -358,8 +340,8 @@ describe("AgentWorkspaceService", () => {
 
     const agentYaml = await readFile(join(descriptor.workspacePath, "agent.yaml"), "utf8");
     expect(agentYaml).toContain('name: "Ops Agent Updated"');
-    expect(agentYaml).toContain('provider: "anthropic"');
-    expect(agentYaml).toContain("secretRef: ANTHROPIC_API_KEY");
+    expect(agentYaml).toContain('providerId: "anthropic"');
+    expect(agentYaml).not.toContain("secretRef");
     await expect(readFile(join(descriptor.workspacePath, "soul.md"), "utf8")).resolves.toBe("Updated soul.");
   });
 
@@ -375,7 +357,9 @@ describe("AgentWorkspaceService", () => {
       modelSecretRef: "OPENAI_API_KEY",
       soul: "Initial soul."
     };
-    await service.initializeWorkspace(previousAgent, { allowExistingWorkspace: false });
+    await service.initializeWorkspace(previousAgent, {
+      allowExistingWorkspace: false
+    });
     await writeFile(join(descriptor.workspacePath, "soul.md"), "User edited soul.\n", "utf8");
 
     await service.syncWorkspace(
@@ -401,7 +385,9 @@ describe("AgentWorkspaceService", () => {
       modelSecretRef: "OPENAI_API_KEY",
       soul: "Initial soul."
     };
-    await service.initializeWorkspace(previousAgent, { allowExistingWorkspace: false });
+    await service.initializeWorkspace(previousAgent, {
+      allowExistingWorkspace: false
+    });
     await rm(join(descriptor.workspacePath, "soul.md"));
     await symlink(join(descriptor.workspacePath, "agent.yaml"), join(descriptor.workspacePath, "soul.md"));
 
@@ -430,19 +416,12 @@ describe("AgentWorkspaceService", () => {
     };
     await service.initializeWorkspace(agent, { allowExistingWorkspace: false });
 
-    const result = await service.writeWorkflowSource(
-      agent,
-      "support-triage",
-      "ts",
+    const result = await service.writeWorkflowSource(agent, "support-triage", "ts", "export default workflow;\n");
+
+    expect(result.relativePath).toBe(".homelab/agents/ops-agent--12345678/src/mastra/workflows/support-triage.ts");
+    await expect(readFile(join(descriptor.workspacePath, "src", "mastra", "workflows", "support-triage.ts"), "utf8")).resolves.toBe(
       "export default workflow;\n"
     );
-
-    expect(result.relativePath).toBe(
-      ".homelab/agents/ops-agent--12345678/src/mastra/workflows/support-triage.ts"
-    );
-    await expect(
-      readFile(join(descriptor.workspacePath, "src", "mastra", "workflows", "support-triage.ts"), "utf8")
-    ).resolves.toBe("export default workflow;\n");
   });
 
   it("rejects workflow source keys that could escape the controlled path", async () => {
@@ -462,8 +441,6 @@ describe("AgentWorkspaceService", () => {
     await expect(service.writeWorkflowSource(agent, "../escape", "ts", "export default workflow;\n")).rejects.toThrow(
       "workflow key contains unsafe characters"
     );
-    await expect(
-      readFile(join(repoRoot, ".homelab", "agents", "escape.ts"), "utf8")
-    ).rejects.toThrow();
+    await expect(readFile(join(repoRoot, ".homelab", "agents", "escape.ts"), "utf8")).rejects.toThrow();
   });
 });

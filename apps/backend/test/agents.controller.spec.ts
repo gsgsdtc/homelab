@@ -40,9 +40,7 @@ describe("AgentsController broad unit", () => {
     jest.clearAllMocks();
     controller = new AgentsController(new AgentsService(prisma, workspaces));
     prisma.agent.findUnique.mockResolvedValue(agentFrom({ soul: "DB snapshot soul" }));
-    prisma.agent.update.mockImplementation(async ({ where, data }: { where: { id: string }; data: any }) =>
-      agentFrom({ id: where.id, ...data })
-    );
+    prisma.agent.update.mockImplementation(async ({ where, data }: { where: { id: string }; data: any }) => agentFrom({ id: where.id, ...data }));
   });
 
   it("returns Agent detail soul from workspace/soul.md instead of the DB snapshot", async () => {
@@ -83,13 +81,13 @@ describe("AgentsController broad unit", () => {
       });
 
     await expect(controller.saveSoul("agent-12345678", { soul: "Updated soul" })).resolves.toMatchObject({
-      soul: "Updated soul",
-      soulFileStatus: "loaded"
+      content: "Updated soul",
+      missing: false
     });
     expect(workspaces.writeSoul).toHaveBeenCalledWith(expect.objectContaining({ id: "agent-12345678" }), "Updated soul");
     expect(prisma.agent.update).toHaveBeenCalledWith({
       where: { id: "agent-12345678" },
-      data: { soul: "Updated soul" }
+      data: { soul: "Updated soul", soulRevision: { increment: 1 } }
     });
   });
 
@@ -103,16 +101,8 @@ describe("AgentsController broad unit", () => {
 
     await expect(controller.saveSoul("agent-12345678", { soul: "Updated soul" })).rejects.toThrow("db unavailable");
 
-    expect(workspaces.writeSoul).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({ id: "agent-12345678" }),
-      "Updated soul"
-    );
-    expect(workspaces.writeSoul).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ id: "agent-12345678" }),
-      "Previous soul"
-    );
+    expect(workspaces.writeSoul).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "agent-12345678" }), "Updated soul");
+    expect(workspaces.writeSoul).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: "agent-12345678" }), "Previous soul");
     expect(workspaces.deleteSoul).not.toHaveBeenCalled();
   });
 
@@ -165,7 +155,9 @@ describe("AgentsController broad unit", () => {
 
     const allowed = guard.canActivate(context);
     if (allowed) {
-      void guardedController.saveSoul("agent-12345678", { soul: "Attempted bypass" });
+      void guardedController.saveSoul("agent-12345678", {
+        soul: "Attempted bypass"
+      });
     }
 
     expect(allowed).toBe(false);
@@ -184,6 +176,9 @@ describe("AgentsController broad unit", () => {
       modelProvider: null,
       modelSecretRef: null,
       soul: "DB snapshot soul",
+      modelProviderId: null,
+      revision: 1,
+      soulRevision: 1,
       initializationError: null,
       initializedAt: now,
       createdAt: now,

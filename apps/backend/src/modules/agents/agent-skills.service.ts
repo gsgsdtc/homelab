@@ -1,14 +1,17 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from "@nestjs/common";
-import { Agent } from "@prisma/client";
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+  UnprocessableEntityException
+} from "@nestjs/common";
+import { Agent, AgentStatus } from "@prisma/client";
 import { AppKeyIdentity } from "../app-keys/app-keys.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { AgentWorkspaceService } from "./agent-workspace.service";
-import {
-  AgentSkillChangeResult,
-  AgentSkillFailedStageValue,
-  AgentSkillMutation,
-  SkillConfigEntry
-} from "./agent-skill-types";
+import { AgentSkillChangeResult, AgentSkillFailedStageValue, AgentSkillMutation, SkillConfigEntry } from "./agent-skill-types";
 import {
   AgentSkillInstallDto,
   AgentSkillOperationValue,
@@ -80,9 +83,15 @@ export class AgentSkillsService {
   }
 
   async getChange(agentId: string, changeId: string): Promise<AgentSkillChangeResult> {
-    const change = await (this.prisma as any).agentSkillChange.findUnique({ where: { id: changeId } });
+    const change = await (this.prisma as any).agentSkillChange.findUnique({
+      where: { id: changeId }
+    });
     if (!change || change.targetAgentId !== agentId) {
-      throw new NotFoundException("skill change not found");
+      throw new NotFoundException({
+        statusCode: 404,
+        code: "SUBRESOURCE_NOT_FOUND",
+        message: "skill change not found"
+      });
     }
     return this.toChangeResult(change);
   }
@@ -102,6 +111,8 @@ export class AgentSkillsService {
   }
 
   async removeAdmin(agentId: string, dto: AgentSkillRemoveDto, adminId: string): Promise<AgentSkillChangeResult> {
+    const agent = await this.findAgent(agentId);
+    this.assertAgentReady(agent);
     const existing = await (this.prisma as any).agentSkillInstallation.findUnique({
       where: { agentId_skillName: { agentId, skillName: dto.skillName } }
     });
@@ -160,9 +171,15 @@ export class AgentSkillsService {
     actor: { actorType: "admin" | "agent"; actorId: string }
   ): Promise<AgentSkillChangeResult> {
     const agent = await this.findAgent(agentId);
-    const source = await (this.prisma as any).agentSkillSource.findUnique({ where: { id: sourceId } });
+    this.assertAgentReady(agent);
+    const source = await (this.prisma as any).agentSkillSource.findUnique({
+      where: { id: sourceId }
+    });
     if (!source || !source.isTrusted || source.sourceType !== sourceType) {
-      throw new BadRequestException("skill source is not trusted or does not exist");
+      throw new UnprocessableEntityException({
+        code: "SKILL_SOURCE_INVALID",
+        message: "skill source is not trusted or does not exist"
+      });
     }
 
     const currentInstallations = await (this.prisma as any).agentSkillInstallation.findMany({ where: { agentId } });
@@ -244,7 +261,10 @@ export class AgentSkillsService {
       }
     }
 
-    await this.updateChange(change.id, { changeStatus: "applying", resolvedVersion: resolvedVersion ?? null });
+    await this.updateChange(change.id, {
+      changeStatus: "applying",
+      resolvedVersion: resolvedVersion ?? null
+    });
     try {
       const mutation: AgentSkillMutation = {
         operation,
@@ -285,7 +305,11 @@ export class AgentSkillsService {
         if (operation === "remove") {
           await tx.agentSkillInstallation.update({
             where: { agentId_skillName: { agentId: agent.id, skillName } },
-            data: { enabled: false, lastChangeId: changeId, configVersion: committed.activeConfigVersion }
+            data: {
+              enabled: false,
+              lastChangeId: changeId,
+              configVersion: committed.activeConfigVersion
+            }
           });
         } else {
           await tx.agentSkillInstallation.upsert({
@@ -312,16 +336,16 @@ export class AgentSkillsService {
         }
         await tx.agentSkillChange.update({
           where: { id: changeId },
-          data: { activeConfigVersion: committed.activeConfigVersion, changeStatus: "reloading" }
+          data: {
+            activeConfigVersion: committed.activeConfigVersion,
+            changeStatus: "reloading"
+          }
         });
       });
       return committed;
     } catch (error) {
       await this.workspaces.rollbackSkillsConfig(agent, changeId, previousConfigVersion);
-      const failedChange = await this.updateChange(
-        changeId,
-        this.failureData("atomic_switch", "AGENT_SKILL_ATOMIC_SWITCH_FAILED", error)
-      );
+      const failedChange = await this.updateChange(changeId, this.failureData("atomic_switch", "AGENT_SKILL_ATOMIC_SWITCH_FAILED", error));
       throw this.withFailedChange(error, failedChange);
     }
   }
@@ -364,7 +388,10 @@ export class AgentSkillsService {
     error: unknown
   ): Promise<AgentSkillChangeResult> {
     try {
-      const latest = (await (this.prisma as any).agentSkillChange.findUnique?.({ where: { id: change.id } })) ?? change;
+      const latest =
+        (await (this.prisma as any).agentSkillChange.findUnique?.({
+          where: { id: change.id }
+        })) ?? change;
       const rolledBack = await this.workspaces.rollbackSkillsConfig(agent, change.id, latest.previousConfigVersion ?? null);
       await this.restoreInstallation(agent.id, change.skillName, previousInstallation);
       const final = await this.updateChange(change.id, {
@@ -410,8 +437,15 @@ export class AgentSkillsService {
     if (failedChange) {
       return this.toChangeResult(failedChange);
     }
-    const latest = await (this.prisma as any).agentSkillChange.findUnique?.({ where: { id: change.id } });
-    return this.toChangeResult(latest ?? { ...change, ...this.failureData("staging_write", "AGENT_SKILL_CHANGE_FAILED", error) });
+    const latest = await (this.prisma as any).agentSkillChange.findUnique?.({
+      where: { id: change.id }
+    });
+    return this.toChangeResult(
+      latest ?? {
+        ...change,
+        ...this.failureData("staging_write", "AGENT_SKILL_CHANGE_FAILED", error)
+      }
+    );
   }
 
   private async findAgent(id: string): Promise<Agent> {
@@ -420,6 +454,15 @@ export class AgentSkillsService {
       throw new NotFoundException("agent not found");
     }
     return agent;
+  }
+
+  private assertAgentReady(agent: Pick<Agent, "status">): void {
+    if (agent.status !== undefined && agent.status !== AgentStatus.ready) {
+      throw new ConflictException({
+        code: "AGENT_NOT_READY",
+        message: "Agent is not ready"
+      });
+    }
   }
 
   private toConfigEntries(installations: SkillInstallRecord[]): SkillConfigEntry[] {
@@ -453,11 +496,7 @@ export class AgentSkillsService {
     };
   }
 
-  private async restoreInstallation(
-    agentId: string,
-    skillName: string,
-    previousInstallation: InstallationSnapshot
-  ): Promise<void> {
+  private async restoreInstallation(agentId: string, skillName: string, previousInstallation: InstallationSnapshot): Promise<void> {
     const where = { agentId_skillName: { agentId, skillName } };
     if (!previousInstallation) {
       await (this.prisma as any).agentSkillInstallation.delete({ where });
@@ -505,6 +544,11 @@ export class AgentSkillsService {
       previousConfigVersion: null,
       activeConfigVersion: null,
       stagedConfigVersion: null,
+      sequenceIndex: 0,
+      terminal: true,
+      finishedAt: new Date(),
+      persistedConfigVersion: null,
+      runtimeLoadedVersion: null,
       effectiveFor: "next_task"
     };
   }
@@ -523,7 +567,10 @@ export class AgentSkillsService {
   }
 
   private async updateChange(changeId: string, data: Record<string, unknown>): Promise<SkillChangeRecord> {
-    return (this.prisma as any).agentSkillChange.update({ where: { id: changeId }, data });
+    return (this.prisma as any).agentSkillChange.update({
+      where: { id: changeId },
+      data
+    });
   }
 
   private isUniqueConflict(error: unknown): boolean {
@@ -544,6 +591,8 @@ export class AgentSkillsService {
   }
 
   private toChangeResult(change: SkillChangeRecord): AgentSkillChangeResult {
+    const statuses = ["pending", "validating", "applying", "reloading", "succeeded", "failed", "rolled_back", "rollback_failed"];
+    const terminal = ["succeeded", "failed", "rolled_back", "rollback_failed"].includes(change.changeStatus);
     return {
       changeId: change.id,
       skillName: change.skillName,
@@ -558,6 +607,11 @@ export class AgentSkillsService {
       previousConfigVersion: change.previousConfigVersion ?? null,
       activeConfigVersion: change.activeConfigVersion ?? null,
       stagedConfigVersion: change.stagedConfigVersion ?? null,
+      sequenceIndex: Math.max(0, statuses.indexOf(change.changeStatus)),
+      terminal,
+      finishedAt: change.finishedAt ?? null,
+      persistedConfigVersion: change.activeConfigVersion ?? null,
+      runtimeLoadedVersion: change.reloadStatus === "loaded" ? change.activeConfigVersion ?? null : null,
       effectiveFor: "next_task"
     };
   }

@@ -23,11 +23,7 @@ export class AgentWorkflowsController {
   }
 
   @Get(":workflowKey")
-  get(
-    @Param("agentId") agentId: string,
-    @Param("workflowKey") workflowKey: string,
-    @Query("view") view: "active" | "draft" = "draft"
-  ) {
+  get(@Param("agentId") agentId: string, @Param("workflowKey") workflowKey: string, @Query("view") view: "active" | "draft" = "draft") {
     return this.workflows.get(agentId, workflowKey, view);
   }
 
@@ -59,5 +55,17 @@ export class AgentWorkflowsController {
   @Post(":workflowKey/rollback")
   rollback(@Param("agentId") agentId: string, @Param("workflowKey") workflowKey: string, @Body() dto: RollbackWorkflowDto) {
     return this.workflows.rollback(agentId, workflowKey, dto);
+  }
+}
+
+@Controller("agents/:agentId/workflow-capabilities")
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(UserRole.ADMIN)
+export class AgentWorkflowCapabilitiesController {
+  constructor(private readonly workflows: AgentWorkflowsService) {}
+
+  @Get()
+  get(@Param("agentId") _agentId: string) {
+    return this.workflows.capabilities();
   }
 }

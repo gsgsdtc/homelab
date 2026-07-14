@@ -1,4 +1,4 @@
-import { IsOptional, IsString, Matches, MaxLength } from "class-validator";
+import { IsDefined, IsInt, IsOptional, IsString, MaxLength, Min } from "class-validator";
 
 export class UpdateAgentDto {
   @IsOptional()
@@ -8,16 +8,18 @@ export class UpdateAgentDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(80)
+  @IsString()
+  @MaxLength(128)
+  modelProviderId?: string | null;
+
+  @IsOptional()
+  @IsDefined()
+  @IsInt()
+  @Min(1)
+  expectedRevision?: number;
+
+  /** Compile-time compatibility only; ValidationPipe rejects legacy API fields. */
   modelProvider?: string;
-
-  @IsOptional()
-  @IsString()
-  @Matches(/^[A-Z][A-Z0-9_]{1,127}$/)
   modelSecretRef?: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(20000)
   soul?: string;
 }

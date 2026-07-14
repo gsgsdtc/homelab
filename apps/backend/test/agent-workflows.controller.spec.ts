@@ -55,7 +55,7 @@ function response(overrides: Record<string, unknown>) {
     reloadStatus: "draft" as const,
     loadedAt: null,
     updatedAt: new Date("2026-07-13T12:00:00Z"),
-    revision: "draft-v1",
+    revision: 1,
     error: null,
     ...overrides
   };
