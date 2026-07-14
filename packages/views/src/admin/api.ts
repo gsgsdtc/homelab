@@ -337,6 +337,13 @@ export class AdminApiClient {
     });
   }
 
+  saveAgentSoul(id: string, soul: string) {
+    return this.request<Agent>(`/agents/${id}/soul`, {
+      method: "PATCH",
+      body: JSON.stringify({ soul }),
+    });
+  }
+
   retryAgentInitialization(id: string) {
     return this.request<Agent>(`/agents/${id}/retry-initialization`, {
       method: "POST",
