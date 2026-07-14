@@ -170,7 +170,7 @@ export class AgentWorkflowsService {
           rollbackOfVersionId: (dto as ReloadWorkflowDto & { rollbackOfVersionId?: string }).rollbackOfVersionId
         }
       });
-      await this.pruneOldVersions(tx, workflow.id);
+      await this.pruneOldVersions(tx, workflow.id, workflow.draftHash!);
       return updated;
     });
     return this.toPublic(promoted);
@@ -238,16 +238,19 @@ export class AgentWorkflowsService {
     }
   }
 
-  private async pruneOldVersions(tx: any, workflowId: string) {
+  private async pruneOldVersions(tx: any, workflowId: string, activeHash: string) {
     const versions = await tx.agentWorkflowVersion.findMany({
       where: { workflowId },
       orderBy: { promotedAt: "desc" },
       skip: 10,
-      select: { id: true }
+      select: { id: true, sourceHash: true }
     });
-    if (versions.length) {
+    const pruneIds = versions
+      .filter((version: { id: string; sourceHash?: string | null }) => version.sourceHash !== activeHash)
+      .map((version: { id: string }) => version.id);
+    if (pruneIds.length) {
       await tx.agentWorkflowVersion.deleteMany({
-        where: { id: { in: versions.map((version: { id: string }) => version.id) } }
+        where: { id: { in: pruneIds } }
       });
     }
   }
@@ -275,6 +278,10 @@ export class AgentWorkflowsService {
       .replace(/\/(?:private|Users|home)\/[^\s'"]+/g, "[path]")
       .replace(/sk-[A-Za-z0-9_-]{8,}/g, "[secret]")
       .replace(/gh[pousr]_[A-Za-z0-9_]{8,}/g, "[secret]")
-      .replace(/xox[baprs]-[A-Za-z0-9-]{8,}/g, "[secret]");
+      .replace(/xox[baprs]-[A-Za-z0-9-]{8,}/g, "[secret]")
+      .replace(/AKIA[0-9A-Z]{16}/g, "[secret]")
+      .replace(/AIza[0-9A-Za-z_-]{20,}/g, "[secret]")
+      .replace(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, "[secret]")
+      .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----/g, "[secret]");
   }
 }

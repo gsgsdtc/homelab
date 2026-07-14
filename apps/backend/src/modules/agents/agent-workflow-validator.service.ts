@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import ts from "typescript";
 
 export interface ValidateWorkflowSourceInput {
   workflowKey: string;
@@ -44,6 +45,7 @@ export class AgentWorkflowValidator {
     }
     this.validateImports(input.source);
     this.validateMastraShape(input);
+    this.validateSyntax(input);
   }
 
   private validateImports(source: string): void {
@@ -74,18 +76,35 @@ export class AgentWorkflowValidator {
   }
 
   private validateMastraShape(input: ValidateWorkflowSourceInput): void {
-    if (!/createWorkflow\s*\(/.test(input.source)) {
+    const workflowDeclaration = input.source.match(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*createWorkflow\s*\(/);
+    if (!workflowDeclaration) {
       throw new BadRequestException("workflow source must call createWorkflow()");
     }
     if (!/\.commit\s*\(/.test(input.source)) {
       throw new BadRequestException("workflow source must commit the Mastra workflow");
     }
-    if (!/export\s+default\s+/.test(input.source)) {
+    const workflowVariable = workflowDeclaration[1];
+    const defaultExport = input.source.match(/export\s+default\s+([A-Za-z_$][\w$]*)\b/);
+    if (!defaultExport || defaultExport[1] !== workflowVariable) {
       throw new BadRequestException("workflow source must default export a Mastra workflow");
     }
     const idMatch = input.source.match(/id\s*:\s*["']([^"']+)["']/);
     if (idMatch && idMatch[1] !== input.workflowKey) {
       throw new BadRequestException("workflow id must match workflowKey");
+    }
+  }
+
+  private validateSyntax(input: ValidateWorkflowSourceInput): void {
+    const result = ts.transpileModule(input.source, {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+        allowJs: input.extension === "js"
+      },
+      reportDiagnostics: true
+    });
+    if (result.diagnostics?.some((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error)) {
+      throw new BadRequestException("workflow source contains invalid TypeScript");
     }
   }
 }
