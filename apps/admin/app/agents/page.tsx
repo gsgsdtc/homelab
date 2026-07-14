@@ -236,6 +236,14 @@ export default function AgentsPage() {
                       <button disabled={agent.status !== "ready"} type="button">
                         运行
                       </button>
+                      {agent.status === "ready" ? (
+                        <a
+                          className="button-link secondary"
+                          href={`/agents/${agent.id}/chat`}
+                        >
+                          聊天
+                        </a>
+                      ) : null}
                       {agent.status === "init_failed" ? (
                         <button
                           disabled={busyId === agent.id}
@@ -291,6 +299,14 @@ export default function AgentsPage() {
                 <button disabled={selected.status !== "ready"} type="button">
                   运行
                 </button>
+                {selected.status === "ready" ? (
+                  <a
+                    className="button-link"
+                    href={`/agents/${selected.id}/chat`}
+                  >
+                    开始聊天
+                  </a>
+                ) : null}
                 {selected.status === "init_failed" ? (
                   <button
                     disabled={busyId === selected.id}

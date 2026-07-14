@@ -344,6 +344,84 @@ describe("AdminApiClient", () => {
     );
   });
 
+  it("uses the frozen Agent chat DTO endpoints and returns terminal failures", async () => {
+    store.setToken("jwt-token");
+    fetchMock
+      .mockResolvedValueOnce(
+        okJson({
+          agentId: "agent-1",
+          eligible: true,
+          code: null,
+          message: null,
+          agent: { name: "Ops Agent", status: "ready" },
+          providerSummary: { name: "OpenAI", model: "gpt-4.1-mini" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ sessionId: "session-1" }), {
+          status: 201,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            requestId: "req-1",
+            executionId: "exec-1",
+            clientMessageId: "message_attempt_0001",
+            logicalMessageId: "message_attempt_0001",
+            retryOfClientMessageId: null,
+            status: "failed",
+            code: "MODEL_TIMEOUT",
+            message: "模型响应超时",
+            retryable: true,
+            acceptedAt: "2026-07-14T00:00:00Z",
+            completedAt: "2026-07-14T00:00:01Z",
+            replayed: false,
+          }),
+          { status: 504, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    const client = new AdminApiClient({
+      baseUrl: "/api/backend",
+      tokenStore: store,
+      fetcher: fetchMock,
+    });
+
+    await client.getAgentChatEligibility("agent-1");
+    await client.createAgentChatSession("agent-1");
+    await expect(
+      client.sendAgentChatMessage("agent-1", "session-1", {
+        clientMessageId: "message_attempt_0001",
+        content: "检查当前配置",
+        retryOfClientMessageId: null,
+      }),
+    ).resolves.toMatchObject({ status: "failed", retryable: true });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/backend/agents/agent-1/chat/eligibility",
+      expect.any(Object),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/backend/agents/agent-1/chat/sessions",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/backend/agents/agent-1/chat/sessions/session-1/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          clientMessageId: "message_attempt_0001",
+          content: "检查当前配置",
+          retryOfClientMessageId: null,
+        }),
+      }),
+    );
+  });
+
   it("sends model provider list and mutations to the backend without API key in URLs", async () => {
     store.setToken("jwt-token");
     fetchMock

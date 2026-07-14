@@ -1,3 +1,11 @@
+import {
+  isAgentChatMessageResponse,
+  type AgentChatEligibility,
+  type AgentChatMessageRequest,
+  type AgentChatMessageResponse,
+  type AgentChatSession,
+} from "./agent-chat";
+
 export type UserRole = "USER" | "ADMIN";
 
 export interface PublicUser {
@@ -348,6 +356,42 @@ export class AdminApiClient {
     return this.request<Agent>(`/agents/${id}/retry-initialization`, {
       method: "POST",
     });
+  }
+
+  getAgentChatEligibility(agentId: string) {
+    return this.request<AgentChatEligibility>(
+      `/agents/${agentId}/chat/eligibility`,
+    );
+  }
+
+  createAgentChatSession(agentId: string) {
+    return this.request<AgentChatSession>(`/agents/${agentId}/chat/sessions`, {
+      method: "POST",
+    });
+  }
+
+  async sendAgentChatMessage(
+    agentId: string,
+    sessionId: string,
+    payload: AgentChatMessageRequest,
+  ): Promise<AgentChatMessageResponse> {
+    try {
+      return await this.request<AgentChatMessageResponse>(
+        `/agents/${agentId}/chat/sessions/${sessionId}/messages`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+      );
+    } catch (error) {
+      if (
+        error instanceof ApiError &&
+        isAgentChatMessageResponse(error.details)
+      ) {
+        return error.details;
+      }
+      throw error;
+    }
   }
 
   private async request<T>(
