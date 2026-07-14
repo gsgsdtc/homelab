@@ -55,6 +55,35 @@ describe("AgentWorkspaceService", () => {
     );
   });
 
+  it("keeps soul and workflow workspace capabilities available after baseline integration", async () => {
+    const descriptor = service.buildDescriptor("ops-agent", "12345678-abcd");
+    const agent = {
+      id: "12345678-abcd",
+      name: "Ops Agent",
+      slug: "ops-agent",
+      workspaceName: descriptor.workspaceName,
+      workspacePath: descriptor.relativeWorkspacePath,
+      modelProvider: null,
+      modelSecretRef: null,
+      soul: "Initial soul."
+    };
+    await service.initializeWorkspace(agent, { allowExistingWorkspace: false });
+
+    const integratedService = service as AgentWorkspaceService & {
+      writeSoul(input: typeof agent, content: string): Promise<void>;
+      readSoulForRun(input: typeof agent): Promise<string>;
+    };
+
+    expect(typeof integratedService.writeSoul).toBe("function");
+    expect(typeof service.writeWorkflowSource).toBe("function");
+
+    await integratedService.writeSoul(agent, "Updated soul.\n");
+    await service.writeWorkflowSource(agent, "default", "ts", "export default workflow;\n");
+
+    await expect(integratedService.readSoulForRun(agent)).resolves.toBe("Updated soul.\n");
+    await expect(service.readWorkflowSource(agent, "default", "ts")).resolves.toBe("export default workflow;\n");
+  });
+
   it("preserves snapshots across the QA install, update, and remove lifecycle", async () => {
     const descriptor = service.buildDescriptor("ops-agent", "12345678-abcd");
     const agent = {
