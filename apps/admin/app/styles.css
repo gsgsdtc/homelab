@@ -277,6 +277,54 @@ label {
   gap: 10px;
 }
 
+.soul-panel {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.soul-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.soul-header h4 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.soul-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.soul-panel textarea {
+  min-height: 260px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  line-height: 1.5;
+}
+
+.notice.compact {
+  margin-bottom: 0;
+  padding: 10px 12px;
+}
+
+.notice.success {
+  border-color: #abefc6;
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.inline-ghost {
+  margin-top: 0;
+}
+
 .inline-code {
   border-radius: 6px;
   background: #f2f4f7;
