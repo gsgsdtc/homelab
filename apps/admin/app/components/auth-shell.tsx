@@ -20,10 +20,14 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
   >("checking");
 
   useEffect(() => {
+    const unsubscribe = api.onUnauthorized(() => {
+      setStatus("login");
+      router.replace("/login");
+    });
     if (!api.getToken()) {
       setStatus("login");
       router.replace("/login");
-      return;
+      return unsubscribe;
     }
 
     let active = true;
@@ -42,6 +46,7 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
       });
     return () => {
       active = false;
+      unsubscribe();
     };
   }, [router]);
 

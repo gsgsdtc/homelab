@@ -1,7 +1,12 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { Agent, AgentWorkflow, ModelProvider } from "@homelab/views";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  ApiError,
+  type Agent,
+  type AgentWorkflow,
+  type ModelProvider,
+} from "@homelab/views";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import AgentsPage from "./page";
 
@@ -13,6 +18,7 @@ const mocks = vi.hoisted(() => ({
     getAgentSkillChange: vi.fn(),
     getAgentSoul: vi.fn(),
     getAgentWorkflow: vi.fn(),
+    getWorkflowCapabilities: vi.fn(),
     installAgentSkill: vi.fn(),
     listAgentSkills: vi.fn(),
     listAgentWorkflowVersions: vi.fn(),
@@ -65,10 +71,6 @@ const agent: Agent = {
   status: "ready",
   workspacePath: ".homelab/agents/ops-agent--a1",
   workspaceName: "ops-agent--a1",
-  workspaceFiles: [
-    { name: "agent.yaml", present: true },
-    { name: "soul.md", present: true },
-  ],
   initError: null,
   gitStatus: "dirty",
   modelProviderId: null,
@@ -95,6 +97,7 @@ const page = (items: Agent[] = [agent], pageNumber = 1, pageSize = 20) => ({
 });
 
 describe("AgentsPage", () => {
+  afterEach(() => vi.useRealTimers());
   beforeEach(() => {
     vi.clearAllMocks();
     window.history.replaceState(null, "", "/agents");
@@ -127,6 +130,12 @@ describe("AgentsPage", () => {
     mocks.api.listAgentWorkflows.mockResolvedValue([workflow]);
     mocks.api.getAgentWorkflow.mockResolvedValue(workflow);
     mocks.api.listAgentWorkflowVersions.mockResolvedValue([]);
+    mocks.api.getWorkflowCapabilities.mockResolvedValue({
+      sourceMaxBytes: 262_144,
+      reloadTimeoutMs: 30_000,
+      historyLimit: 10,
+      extensions: ["ts", "js"],
+    });
   });
 
   async function renderReadyPage() {
@@ -226,7 +235,7 @@ describe("AgentsPage", () => {
     expect(await screen.findByText("基础配置已保存")).toBeInTheDocument();
   });
 
-  it("shows workspace files and retries a failed initialization", async () => {
+  it("uses the real Agent DTO and retries a failed initialization", async () => {
     const failed = {
       ...agent,
       status: "init_failed",
@@ -235,7 +244,6 @@ describe("AgentsPage", () => {
         code: "WORKSPACE_FILE_WRITE_FAILED",
         message: "soul.md 初始化失败",
       },
-      workspaceFiles: [{ name: "soul.md", present: false }],
     };
     mocks.api.listAgents.mockResolvedValue(page([failed]));
     mocks.api.getAgent.mockResolvedValue(failed);
@@ -247,12 +255,99 @@ describe("AgentsPage", () => {
 
     await userEvent.click(screen.getByRole("tab", { name: "Workspace" }));
     expect(screen.getByText("WORKSPACE_FILE_WRITE_FAILED")).toBeInTheDocument();
-    expect(screen.getByText("soul.md 缺失")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/agent\.yaml|soul\.md 缺失/),
+    ).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "重试初始化" }));
 
     await waitFor(() =>
       expect(mocks.api.retryAgentInitialization).toHaveBeenCalledWith(
         "agent-a",
+      ),
+    );
+  });
+
+  it("recovers overview edits from a revision conflict using the latest snapshot", async () => {
+    mocks.api.updateAgent
+      .mockRejectedValueOnce(
+        new ApiError("conflict", 409, {
+          code: "REVISION_CONFLICT",
+          currentRevision: 8,
+        }),
+      )
+      .mockResolvedValueOnce({ ...agent, name: "Conflict Name", revision: 9 });
+    mocks.api.getAgent
+      .mockResolvedValueOnce(agent)
+      .mockResolvedValueOnce({ ...agent, name: "Server Name", revision: 8 });
+    await renderReadyPage();
+
+    const name = screen.getByLabelText("Agent 名称");
+    await userEvent.clear(name);
+    await userEvent.type(name, "Conflict Name");
+    await userEvent.click(screen.getByRole("button", { name: "保存基础配置" }));
+
+    expect(
+      (await screen.findAllByText(/服务器 Revision 8/)).length,
+    ).toBeGreaterThan(0);
+    await userEvent.click(
+      screen.getByRole("button", { name: "重新应用我的基础配置" }),
+    );
+    expect(name).toHaveValue("Conflict Name");
+    await userEvent.click(screen.getByRole("button", { name: "保存基础配置" }));
+    await waitFor(() =>
+      expect(mocks.api.updateAgent).toHaveBeenLastCalledWith(
+        "agent-a",
+        expect.objectContaining({ expectedRevision: 8 }),
+      ),
+    );
+  });
+
+  it("preserves and retries a Soul draft after refreshing a revision conflict", async () => {
+    mocks.api.saveAgentSoul
+      .mockRejectedValueOnce(
+        new ApiError("conflict", 409, {
+          code: "SOUL_REVISION_CONFLICT",
+          currentRevision: 4,
+        }),
+      )
+      .mockResolvedValueOnce({
+        content: "My Soul",
+        missing: false,
+        revision: 5,
+        maxBytes: 65_536,
+      });
+    mocks.api.getAgentSoul
+      .mockResolvedValueOnce({
+        content: "Old Soul",
+        missing: false,
+        revision: 3,
+        maxBytes: 65_536,
+      })
+      .mockResolvedValueOnce({
+        content: "Server Soul",
+        missing: false,
+        revision: 4,
+        maxBytes: 65_536,
+      });
+    await renderReadyPage();
+    await userEvent.click(screen.getByRole("tab", { name: "Soul" }));
+    const editor = await screen.findByLabelText("Soul 内容");
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "My Soul");
+    await userEvent.click(screen.getByRole("button", { name: "保存 Soul" }));
+
+    expect(
+      (await screen.findAllByText(/服务器 Revision 4/)).length,
+    ).toBeGreaterThan(0);
+    expect(editor).toHaveValue("My Soul");
+    await userEvent.click(
+      screen.getByRole("button", { name: "使用最新 revision 重试 Soul" }),
+    );
+    await waitFor(() =>
+      expect(mocks.api.saveAgentSoul).toHaveBeenLastCalledWith(
+        "agent-a",
+        "My Soul",
+        4,
       ),
     );
   });
@@ -653,7 +748,7 @@ describe("AgentsPage", () => {
       pageSize: 100,
     });
     mocks.api.listSkillCatalogSkills.mockResolvedValue({
-      items: [{ skillId: "qa", name: "qa" }],
+      items: [{ skillId: "qa-tools", name: "qa" }],
       total: 1,
       page: 1,
       pageSize: 100,
@@ -686,6 +781,13 @@ describe("AgentsPage", () => {
     await renderReadyPage();
     await userEvent.click(screen.getByRole("tab", { name: "Skills" }));
     await userEvent.click(await screen.findByRole("button", { name: "更新" }));
+    await waitFor(() =>
+      expect(mocks.api.listSkillCatalogVersions).toHaveBeenCalledWith(
+        "builtin",
+        "qa-tools",
+        { page: 1, pageSize: 100 },
+      ),
+    );
     await userEvent.selectOptions(
       await screen.findByLabelText("Skill 版本"),
       "2.0.0",
@@ -700,6 +802,244 @@ describe("AgentsPage", () => {
         version: "2.0.0",
       }),
     );
+  });
+
+  it("rolls back from the real response DTO without a source field", async () => {
+    mocks.api.listAgentWorkflowVersions.mockResolvedValue([
+      {
+        id: "version-1",
+        sourceHash: "1234567890",
+        source: "export default { version: 'rollback' }",
+        extension: "ts",
+      },
+    ]);
+    mocks.api.rollbackAgentWorkflow.mockResolvedValue({
+      workflowKey: "support",
+      filePath: "workflows/support.ts",
+      draftHash: "rollback-hash",
+      activeHash: "rollback-hash",
+      revision: 2,
+      reloadStatus: "succeeded",
+    });
+    await renderReadyPage();
+    await userEvent.click(screen.getByRole("tab", { name: "Workflow" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "编辑 support" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "回滚到此版本" }));
+
+    expect(screen.getByLabelText("Workflow 源码")).toHaveValue(
+      "export default { version: 'rollback' }",
+    );
+  });
+
+  it("loads Workflow capabilities and blocks multibyte sources over the byte limit", async () => {
+    mocks.api.getWorkflowCapabilities.mockResolvedValue({
+      sourceMaxBytes: 4,
+      reloadTimeoutMs: 30_000,
+      historyLimit: 1,
+      extensions: ["ts"],
+    });
+    await renderReadyPage();
+    await userEvent.click(screen.getByRole("tab", { name: "Workflow" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "新建 Workflow" }),
+    );
+    await userEvent.type(screen.getByLabelText("Workflow key"), "new-flow");
+    expect(
+      screen.getByRole("button", { name: "创建 Workflow" }),
+    ).toBeDisabled();
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "编辑 support" }),
+    );
+    const editor = screen.getByLabelText("Workflow 源码");
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "你好");
+
+    expect(screen.getByText("6 / 4 字节")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存 draft" })).toBeDisabled();
+    expect(screen.getByText(/最多保留 1 个历史版本/)).toBeInTheDocument();
+  });
+
+  it("preserves and retries a Workflow draft after refreshing a revision conflict", async () => {
+    mocks.api.saveAgentWorkflowDraft
+      .mockRejectedValueOnce(
+        new ApiError("conflict", 409, {
+          code: "WORKFLOW_REVISION_CONFLICT",
+          currentRevision: 2,
+        }),
+      )
+      .mockResolvedValueOnce({
+        ...workflow,
+        revision: 3,
+        draftHash: "draft-v3",
+      });
+    mocks.api.getAgentWorkflow
+      .mockResolvedValueOnce(workflow)
+      .mockResolvedValueOnce({
+        ...workflow,
+        source: "export default { server: true }",
+        revision: 2,
+        draftHash: "server-v2",
+      });
+    await renderReadyPage();
+    await userEvent.click(screen.getByRole("tab", { name: "Workflow" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "编辑 support" }),
+    );
+    const editor = screen.getByLabelText("Workflow 源码");
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "export default {{ local: true }}");
+    await userEvent.click(screen.getByRole("button", { name: "保存 draft" }));
+
+    expect(
+      (await screen.findAllByText(/服务器 Revision 2/)).length,
+    ).toBeGreaterThan(0);
+    expect(editor).toHaveValue("export default { local: true }}");
+    await userEvent.click(
+      screen.getByRole("button", { name: "使用最新 revision 重试 Workflow" }),
+    );
+    await waitFor(() =>
+      expect(mocks.api.saveAgentWorkflowDraft).toHaveBeenLastCalledWith(
+        "agent-a",
+        "support",
+        expect.objectContaining({ expectedRevision: 2 }),
+      ),
+    );
+  });
+
+  it("supports dialog focus, Escape close, focus return, and roving tabs", async () => {
+    await renderReadyPage();
+    const opener = screen.getByRole("button", { name: "新增 Agent" });
+    await userEvent.click(opener);
+    const dialog = screen.getByRole("dialog", { name: "新增 Agent" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(screen.getByLabelText("名称")).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("dialog", { name: "新增 Agent" }),
+    ).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+
+    const overview = screen.getByRole("tab", { name: "概览" });
+    overview.focus();
+    await userEvent.keyboard("{ArrowRight}");
+    expect(screen.getByRole("tab", { name: "Workspace" })).toHaveFocus();
+    expect(screen.getByRole("tabpanel")).toHaveAttribute(
+      "aria-labelledby",
+      "agent-tab-workspace",
+    );
+  });
+
+  it("restarts Workflow polling from manual refresh and stops after unmount", async () => {
+    mocks.api.getAgentWorkflow.mockResolvedValue({
+      ...workflow,
+      reloadStatus: "loading",
+    });
+    mocks.api.getWorkflowCapabilities.mockResolvedValue({
+      sourceMaxBytes: 262_144,
+      reloadTimeoutMs: 3_000,
+      historyLimit: 10,
+      extensions: ["ts", "js"],
+    });
+    const { unmount } = render(<AgentsPage />);
+    expect(await screen.findByText("Ops Agent")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Workflow" }));
+    const editButton = await screen.findByRole("button", {
+      name: "编辑 support",
+    });
+    vi.useFakeTimers();
+    act(() => editButton.click());
+    await act(async () => Promise.resolve());
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    }
+    expect(mocks.api.getAgentWorkflow).toHaveBeenCalledTimes(4);
+    expect(screen.getByText(/可手动刷新当前 Workflow/)).toBeInTheDocument();
+    const beforeRefresh = mocks.api.getAgentWorkflow.mock.calls.length;
+    await act(async () => {
+      screen.getByRole("button", { name: "刷新当前 Workflow" }).click();
+      await Promise.resolve();
+    });
+    expect(mocks.api.getAgentWorkflow.mock.calls.length).toBe(
+      beforeRefresh + 1,
+    );
+    unmount();
+    const atUnmount = mocks.api.getAgentWorkflow.mock.calls.length;
+    await act(async () => vi.advanceTimersByTime(30_000));
+    expect(mocks.api.getAgentWorkflow).toHaveBeenCalledTimes(atUnmount);
+  });
+
+  it("polls a Skill change at 1s x10 then 2s to 30s and stops on leave", async () => {
+    const pendingChange = {
+      changeId: "change-pending",
+      skillName: "qa",
+      operation: "remove",
+      changeStatus: "applying",
+      reloadStatus: "unknown",
+      auditStatus: "audit_pending",
+      rollbackResult: "not_required",
+      failedStage: null,
+      errorCode: null,
+      safeErrorSummary: null,
+      terminal: false,
+    };
+    mocks.api.listAgentSkills.mockResolvedValue({
+      agentId: agent.id,
+      changeStatus: "succeeded",
+      reloadStatus: "loaded",
+      auditStatus: "audit_written",
+      rollbackResult: "not_required",
+      failedStage: null,
+      errorCode: null,
+      safeErrorSummary: null,
+      skills: [
+        {
+          name: "qa",
+          version: "1.0.0",
+          sourceType: "registry",
+          sourceId: "builtin",
+          enabled: true,
+          systemRequired: false,
+          selfUpdateAllowed: false,
+        },
+      ],
+    });
+    mocks.api.removeAgentSkill.mockResolvedValue(pendingChange);
+    mocks.api.getAgentSkillChange.mockResolvedValue(pendingChange);
+    const { unmount } = render(<AgentsPage />);
+    expect(await screen.findByText("Ops Agent")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("region", { name: "Agent 详情" }),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Skills" }));
+    const remove = await screen.findByRole("button", { name: "移除" });
+    vi.useFakeTimers();
+    await act(async () => {
+      remove.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    }
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    }
+    expect(mocks.api.getAgentSkillChange).toHaveBeenCalledTimes(20);
+    expect(
+      screen.getByText("Skill 变更仍在进行，可手动刷新状态"),
+    ).toBeInTheDocument();
+    await act(async () => {
+      screen.getByRole("button", { name: "刷新当前 Skill 变更" }).click();
+      await Promise.resolve();
+    });
+    expect(mocks.api.getAgentSkillChange).toHaveBeenCalledTimes(21);
+    unmount();
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(mocks.api.getAgentSkillChange).toHaveBeenCalledTimes(21);
   });
 
   it("creates a workflow and rolls back to a scoped history version", async () => {

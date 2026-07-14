@@ -340,10 +340,14 @@ describe("AdminApiClient", () => {
       tokenStore: store,
       fetcher: fetchMock,
     });
+    const unauthorized = vi.fn();
+    const unsubscribe = client.onUnauthorized(unauthorized);
 
     await expect(client.me()).rejects.toMatchObject({ status: 401 });
 
     expect(store.getToken()).toBeNull();
+    expect(unauthorized).toHaveBeenCalledTimes(1);
+    unsubscribe();
   });
 
   it("sends user mutations to the backend", async () => {

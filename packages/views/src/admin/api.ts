@@ -56,7 +56,6 @@ export interface Agent {
   modelProviderId?: string | null;
   providerSummary?: AgentProviderSummary;
   revision?: number;
-  workspaceFiles?: Array<{ name: string; present: boolean }>;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -292,6 +291,7 @@ export class AdminApiClient {
   private readonly baseUrl: string;
   private readonly tokenStore: TokenStore;
   private readonly fetcher: Fetcher;
+  private readonly unauthorizedListeners = new Set<() => void>();
 
   constructor(options: AdminApiClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "").replace(/\/$/, "");
@@ -305,6 +305,11 @@ export class AdminApiClient {
 
   logout() {
     this.tokenStore.clearToken();
+  }
+
+  onUnauthorized(listener: () => void) {
+    this.unauthorizedListeners.add(listener);
+    return () => this.unauthorizedListeners.delete(listener);
   }
 
   async login(username: string, password: string): Promise<LoginSession> {
@@ -692,6 +697,7 @@ export class AdminApiClient {
     if (!response.ok) {
       if (response.status === 401) {
         this.tokenStore.clearToken();
+        this.unauthorizedListeners.forEach((listener) => listener());
       }
       const details = await readJson(response);
       throw new ApiError(
