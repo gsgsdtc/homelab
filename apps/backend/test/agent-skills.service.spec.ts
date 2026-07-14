@@ -362,6 +362,98 @@ describe("AgentSkillsService", () => {
     expect(prisma.agentSkillChange.create).not.toHaveBeenCalled();
   });
 
+  it("runs the deterministic QA fixture through install, update, and remove with written audits", async () => {
+    prisma.agentSkillSource.findUnique.mockResolvedValue({
+      id: "builtin-registry",
+      sourceType: "registry",
+      label: "Built-in Registry",
+      registryKey: "builtin",
+      isTrusted: true
+    });
+    validator.validate
+      .mockResolvedValueOnce({ resolvedVersion: "1.0.0", manifest: { name: "qa-smoke-skill" } })
+      .mockResolvedValueOnce({ resolvedVersion: "1.0.1", manifest: { name: "qa-smoke-skill" } });
+    workspaces.stageSkillsConfig
+      .mockResolvedValueOnce({
+        previousConfigVersion: null,
+        stagedConfigVersion: "config-100",
+        config: { skills: [{ name: "qa-smoke-skill", version: "1.0.0" }] }
+      })
+      .mockResolvedValueOnce({
+        previousConfigVersion: "config-100",
+        stagedConfigVersion: "config-101",
+        config: { skills: [{ name: "qa-smoke-skill", version: "1.0.1" }] }
+      })
+      .mockResolvedValueOnce({
+        previousConfigVersion: "config-101",
+        stagedConfigVersion: "config-empty",
+        config: { skills: [] }
+      });
+    workspaces.commitSkillsConfig
+      .mockResolvedValueOnce({ activeConfigVersion: "config-100" })
+      .mockResolvedValueOnce({ activeConfigVersion: "config-101" })
+      .mockResolvedValueOnce({ activeConfigVersion: "config-empty" });
+    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+
+    const installed = await service.installAdmin("agent-123", {
+      skillName: "qa-smoke-skill",
+      sourceId: "builtin-registry",
+      sourceType: "registry",
+      version: "1.0.0"
+    }, "admin-1");
+
+    const installedRecord = {
+      agentId: "agent-123",
+      skillName: "qa-smoke-skill",
+      sourceType: "registry",
+      sourceId: "builtin-registry",
+      version: "1.0.0",
+      configVersion: "config-100",
+      enabled: true,
+      systemRequired: false,
+      selfUpdateAllowed: false
+    };
+    prisma.agentSkillInstallation.findUnique.mockResolvedValue(installedRecord);
+    prisma.agentSkillInstallation.findMany.mockResolvedValue([installedRecord]);
+
+    const updated = await service.updateAdmin("agent-123", {
+      skillName: "qa-smoke-skill",
+      sourceId: "builtin-registry",
+      sourceType: "registry",
+      version: "1.0.1"
+    }, "admin-1");
+
+    const updatedRecord = { ...installedRecord, version: "1.0.1", configVersion: "config-101" };
+    prisma.agentSkillInstallation.findUnique.mockResolvedValue(updatedRecord);
+    prisma.agentSkillInstallation.findMany.mockResolvedValue([updatedRecord]);
+
+    const removed = await service.removeAdmin("agent-123", { skillName: "qa-smoke-skill" }, "admin-1");
+
+    for (const result of [installed, updated, removed]) {
+      expect(result).toMatchObject({
+        changeStatus: "succeeded",
+        reloadStatus: "pending_restart",
+        auditStatus: "audit_written",
+        rollbackResult: "not_required",
+        effectiveFor: "next_task"
+      });
+    }
+    expect(prisma.agentSkillChange.create).toHaveBeenNthCalledWith(1, {
+      data: expect.objectContaining({ operation: "install", skillName: "qa-smoke-skill", sourceId: "builtin-registry" })
+    });
+    expect(prisma.agentSkillChange.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({ operation: "update", requestedVersion: "1.0.1" })
+    });
+    expect(prisma.agentSkillChange.create).toHaveBeenNthCalledWith(3, {
+      data: expect.objectContaining({ operation: "remove", requestedVersion: null })
+    });
+    expect(workspaces.stageSkillsConfig).toHaveBeenNthCalledWith(
+      3,
+      agent,
+      expect.objectContaining({ operation: "remove", skillName: "qa-smoke-skill", currentSkills: [expect.objectContaining({ version: "1.0.1" })] })
+    );
+  });
+
   it("rejects untrusted sources before staging workspace files", async () => {
     prisma.agentSkillSource.findUnique.mockResolvedValueOnce(null);
     const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);

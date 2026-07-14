@@ -46,6 +46,9 @@ make ops-deploy-check
 make ops-deploy
 ```
 
+For the deterministic Agent skills acceptance source and the protected test
+deployment checks, see [Agent skills QA fixture](./agent-skills-qa.md).
+
 The script includes a local self-test for service-log reset handling:
 
 ```bash

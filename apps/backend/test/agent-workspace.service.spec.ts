@@ -55,7 +55,7 @@ describe("AgentWorkspaceService", () => {
     );
   });
 
-  it("stages, commits, and rolls back managed skills snapshots", async () => {
+  it("preserves snapshots across the QA install, update, and remove lifecycle", async () => {
     const descriptor = service.buildDescriptor("ops-agent", "12345678-abcd");
     const agent = {
       id: "12345678-abcd",
@@ -72,28 +72,32 @@ describe("AgentWorkspaceService", () => {
     const first = await service.stageSkillsConfig(agent, {
       changeId: "change-1",
       operation: "install",
-      skillName: "skill-a",
+      skillName: "qa-smoke-skill",
       sourceType: "registry",
-      sourceId: "source-1",
-      version: "1.2.0",
-      resolvedVersion: "1.2.0",
+      sourceId: "builtin-registry",
+      version: "1.0.0",
+      resolvedVersion: "1.0.0",
       currentSkills: []
     });
     await service.commitSkillsConfig(agent, "change-1", first.stagedConfigVersion);
+    await expect(
+      readFile(join(descriptor.workspacePath, ".skills-state", "versions", first.stagedConfigVersion, "skills.yaml"), "utf8")
+    ).resolves.toContain('version: "1.0.0"');
+
     const second = await service.stageSkillsConfig(agent, {
       changeId: "change-2",
       operation: "update",
-      skillName: "skill-a",
+      skillName: "qa-smoke-skill",
       sourceType: "registry",
-      sourceId: "source-1",
-      version: "1.3.0",
-      resolvedVersion: "1.3.0",
+      sourceId: "builtin-registry",
+      version: "1.0.1",
+      resolvedVersion: "1.0.1",
       currentSkills: [
         {
-          name: "skill-a",
-          version: "1.2.0",
+          name: "qa-smoke-skill",
+          version: "1.0.0",
           sourceType: "registry",
-          sourceId: "source-1",
+          sourceId: "builtin-registry",
           enabled: true,
           systemRequired: false,
           selfUpdateAllowed: false
@@ -103,13 +107,43 @@ describe("AgentWorkspaceService", () => {
     await service.commitSkillsConfig(agent, "change-2", second.stagedConfigVersion);
 
     await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toContain(
-      'version: "1.3.0"'
+      'version: "1.0.1"'
     );
+    await expect(
+      readFile(join(descriptor.workspacePath, ".skills-state", "versions", first.stagedConfigVersion, "skills.yaml"), "utf8")
+    ).resolves.toContain('version: "1.0.0"');
 
-    await service.rollbackSkillsConfig(agent, "change-2", second.previousConfigVersion);
+    const third = await service.stageSkillsConfig(agent, {
+      changeId: "change-3",
+      operation: "remove",
+      skillName: "qa-smoke-skill",
+      sourceType: "registry",
+      sourceId: "builtin-registry",
+      currentSkills: [
+        {
+          name: "qa-smoke-skill",
+          version: "1.0.1",
+          sourceType: "registry",
+          sourceId: "builtin-registry",
+          enabled: true,
+          systemRequired: false,
+          selfUpdateAllowed: false
+        }
+      ]
+    });
+    await service.commitSkillsConfig(agent, "change-3", third.stagedConfigVersion);
+
+    await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toBe(
+      "skills: []\n"
+    );
+    await expect(
+      readFile(join(descriptor.workspacePath, ".skills-state", "versions", second.stagedConfigVersion, "skills.yaml"), "utf8")
+    ).resolves.toContain('version: "1.0.1"');
+
+    await service.rollbackSkillsConfig(agent, "change-3", third.previousConfigVersion);
 
     await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toContain(
-      'version: "1.2.0"'
+      'version: "1.0.1"'
     );
   });
 
