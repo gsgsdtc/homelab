@@ -945,6 +945,9 @@ describe("AgentsPage", () => {
     });
     const { unmount } = render(<AgentsPage />);
     expect(await screen.findByText("Ops Agent")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("region", { name: "Agent 详情" }),
+    ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: "Workflow" }));
     const editButton = await screen.findByRole("button", {
       name: "编辑 support",
