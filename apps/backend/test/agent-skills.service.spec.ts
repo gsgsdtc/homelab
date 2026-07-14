@@ -1,5 +1,7 @@
 import { BadRequestException, ForbiddenException } from "@nestjs/common";
 import { AgentSkillsService } from "../src/modules/agents/agent-skills.service";
+import { RuntimeReloadClient } from "../src/modules/agents/runtime-reload-client.service";
+import { SkillPackageValidator } from "../src/modules/agents/skill-package-validator.service";
 
 describe("AgentSkillsService", () => {
   const now = new Date("2026-07-13T12:00:00Z");
@@ -50,6 +52,14 @@ describe("AgentSkillsService", () => {
   const reloadClient = {
     reloadSkills: jest.fn()
   };
+
+  const createService = () =>
+    new AgentSkillsService(
+      prisma,
+      workspaces,
+      validator as unknown as SkillPackageValidator,
+      reloadClient as unknown as RuntimeReloadClient
+    );
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -130,7 +140,7 @@ describe("AgentSkillsService", () => {
   });
 
   it("installs from a trusted source and returns pending_restart when no real reload endpoint exists", async () => {
-    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+    const service = createService();
 
     const result = await service.installAdmin("agent-123", {
       skillName: "skill-a",
@@ -168,7 +178,7 @@ describe("AgentSkillsService", () => {
 
   it("treats an atomic active-change create conflict as concurrency_lock", async () => {
     prisma.agentSkillChange.create.mockRejectedValueOnce({ code: "P2002" });
-    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+    const service = createService();
 
     const result = await service.installAdmin("agent-123", {
       skillName: "skill-a",
@@ -194,7 +204,7 @@ describe("AgentSkillsService", () => {
     reloadClient.reloadSkills.mockRejectedValueOnce(
       new Error("reload token ghp_secret1234567890 failed at /repo/private/path")
     );
-    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+    const service = createService();
 
     const result = await service.installAdmin("agent-123", {
       skillName: "skill-a",
@@ -218,7 +228,7 @@ describe("AgentSkillsService", () => {
 
   it("removes the just-installed DB installation when install reload fails", async () => {
     reloadClient.reloadSkills.mockRejectedValueOnce(new Error("reload failed"));
-    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+    const service = createService();
 
     await service.installAdmin("agent-123", {
       skillName: "skill-a",
@@ -258,7 +268,7 @@ describe("AgentSkillsService", () => {
       }
     ]);
     reloadClient.reloadSkills.mockRejectedValueOnce(new Error("reload failed"));
-    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+    const service = createService();
 
     await service.updateAdmin("agent-123", {
       skillName: "skill-a",
@@ -305,7 +315,7 @@ describe("AgentSkillsService", () => {
       }
     ]);
     reloadClient.reloadSkills.mockRejectedValueOnce(new Error("reload failed"));
-    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+    const service = createService();
 
     await service.removeAdmin("agent-123", { skillName: "skill-a" }, "admin-1");
 
@@ -323,7 +333,7 @@ describe("AgentSkillsService", () => {
 
   it("restores the previous workspace config when the DB atomic switch fails", async () => {
     prisma.$transaction.mockRejectedValueOnce(new Error("installation update failed"));
-    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+    const service = createService();
 
     const result = await service.installAdmin("agent-123", {
       skillName: "skill-a",
@@ -344,7 +354,7 @@ describe("AgentSkillsService", () => {
   });
 
   it("rejects agent self-update by default", async () => {
-    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+    const service = createService();
 
     await expect(
       service.selfUpdate(
@@ -364,7 +374,7 @@ describe("AgentSkillsService", () => {
 
   it("rejects untrusted sources before staging workspace files", async () => {
     prisma.agentSkillSource.findUnique.mockResolvedValueOnce(null);
-    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+    const service = createService();
 
     await expect(
       service.installAdmin("agent-123", {

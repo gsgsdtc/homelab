@@ -17,8 +17,8 @@ import {
   AgentSkillSourceTypeValue,
   AgentSkillUpdateDto
 } from "./dto/agent-skill-change.dto";
-import { RuntimeReloadResult } from "./runtime-reload-client.service";
-import { SkillValidationResult } from "./skill-package-validator.service";
+import { RuntimeReloadClient } from "./runtime-reload-client.service";
+import { SkillPackageValidator } from "./skill-package-validator.service";
 
 type SkillChangeRecord = Record<string, any>;
 type SkillInstallRecord = Record<string, any>;
@@ -33,12 +33,6 @@ type InstallationSnapshot = {
   systemRequired: boolean;
   selfUpdateAllowed: boolean;
 } | null;
-type SkillPackageValidatorPort = {
-  validate(mutation: AgentSkillMutation): Promise<SkillValidationResult>;
-};
-type RuntimeReloadClientPort = {
-  reloadSkills(agent: Pick<Agent, "id" | "workspacePath">, activeConfigVersion: string): Promise<RuntimeReloadResult>;
-};
 type SkillChangeFailure = Error & { skillChange?: SkillChangeRecord };
 
 @Injectable()
@@ -46,8 +40,8 @@ export class AgentSkillsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly workspaces: AgentWorkspaceService,
-    private readonly validator: SkillPackageValidatorPort,
-    private readonly reloadClient: RuntimeReloadClientPort
+    private readonly validator: SkillPackageValidator,
+    private readonly reloadClient: RuntimeReloadClient
   ) {}
 
   async list(agentId: string) {
