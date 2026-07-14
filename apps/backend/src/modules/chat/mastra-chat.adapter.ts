@@ -1,6 +1,7 @@
 import { ChatConfigurationSnapshot, ChatTranscriptEntry } from "./chat.types";
 
 export interface MastraChatExecuteInput {
+  requestId: string;
   executionId: string;
   snapshot: ChatConfigurationSnapshot;
   transcript: ChatTranscriptEntry[];

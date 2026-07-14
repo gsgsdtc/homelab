@@ -1,3 +1,6 @@
+import { AddressInfo } from "net";
+import { createServer, Server } from "http";
+
 type LoadedAdapterModule = Record<string, any>;
 
 function loadAdapterModule(): LoadedAdapterModule | null {
@@ -9,6 +12,7 @@ function loadAdapterModule(): LoadedAdapterModule | null {
 }
 
 const adapterModule = loadAdapterModule();
+const executorModule = require("../src/modules/chat/mastra-chat-runtime.executor") as Record<string, any>;
 
 describe("OpenAICompatibleMastraChatAdapter", () => {
   it("provides the typed model-only adapter", () => {
@@ -16,6 +20,33 @@ describe("OpenAICompatibleMastraChatAdapter", () => {
   });
 
   if (!adapterModule) return;
+
+  let providerServer: Server;
+  let providerBaseUrl: string;
+  let providerReply: { status: number; body: string; headers?: Record<string, string>; hold?: boolean };
+
+  beforeAll(async () => {
+    providerServer = createServer((request, response) => {
+      request.resume();
+      request.on("end", () => {
+        if (providerReply.hold) return;
+        response.writeHead(providerReply.status, {
+          "content-type": "application/json",
+          ...providerReply.headers
+        });
+        response.end(providerReply.body);
+      });
+    });
+    await new Promise<void>((resolve) => providerServer.listen(0, "127.0.0.1", resolve));
+    const address = providerServer.address() as AddressInfo;
+    providerBaseUrl = `http://127.0.0.1:${address.port}/v1`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) =>
+      providerServer.close((error) => (error ? reject(error) : resolve()))
+    );
+  });
 
   const snapshot = {
     provider: {
@@ -27,10 +58,34 @@ describe("OpenAICompatibleMastraChatAdapter", () => {
     soul: "System prompt",
     soulRevision: "soul-v1",
     skills: {},
-    workflow: { workflowKey: "default", activeHash: "workflow-v1", source: "model-only" },
+    workflow: {
+      workflowKey: "default",
+      activeHash: "workflow-v1",
+      source: "model-only",
+      executable: executable()
+    },
     versionVector: "vector-v1"
   };
+
+  function executable(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "default",
+      committed: true,
+      steps: {},
+      createRun: jest.fn().mockResolvedValue({
+        cancel: jest.fn(),
+        start: jest.fn(async ({ inputData }: any) => ({
+          status: "success",
+          result: await inputData.model.generate(),
+          input: inputData,
+          steps: {}
+        }))
+      }),
+      ...overrides
+    };
+  }
   const input = {
+    requestId: "req-1",
     executionId: "exec-1",
     snapshot,
     transcript: [],
@@ -51,7 +106,14 @@ describe("OpenAICompatibleMastraChatAdapter", () => {
         cancel: jest.fn()
       }))
     };
-    return { adapter: new adapterModule!.OpenAICompatibleMastraChatAdapter(control), control, clockWaiters };
+    return {
+      adapter: new adapterModule!.OpenAICompatibleMastraChatAdapter(
+        control,
+        new executorModule.MastraChatRuntimeExecutor()
+      ),
+      control,
+      clockWaiters
+    };
   }
 
   afterEach(() => jest.restoreAllMocks());
@@ -63,12 +125,36 @@ describe("OpenAICompatibleMastraChatAdapter", () => {
     await expect(
       adapter.execute({
         ...input,
-        snapshot: { ...snapshot, workflow: { ...snapshot.workflow, source: "tools: { deploy: handler }" } }
+        snapshot: {
+          ...snapshot,
+          workflow: {
+            ...snapshot.workflow,
+            executable: executable({
+              steps: { deploy: { id: "deploy", component: "tool", execute: jest.fn() } }
+            })
+          }
+        }
       })
     ).rejects.toMatchObject({
       chatFailure: expect.objectContaining({ httpStatus: 422, code: "TOOL_NOT_ALLOWED", retryable: false })
     });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("executes the executable frozen into the activeHash snapshot", async () => {
+    const { adapter } = createAdapter();
+    const frozen = executable();
+    jest.spyOn(global, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: "from frozen" } }] }), { status: 200 })
+    );
+
+    await expect(
+      adapter.execute({
+        ...input,
+        snapshot: { ...snapshot, workflow: { ...snapshot.workflow, activeHash: "workflow-v1", executable: frozen } }
+      })
+    ).resolves.toEqual({ text: "from frozen" });
+    expect(frozen.createRun).toHaveBeenCalledWith({ runId: "exec-1" });
   });
 
   it("returns one complete text response without leaking credentials", async () => {
@@ -135,16 +221,120 @@ describe("OpenAICompatibleMastraChatAdapter", () => {
     });
   });
 
+  it.each([
+    [401, "PROVIDER_AUTH_FAILED", 502, false],
+    [403, "PROVIDER_AUTH_FAILED", 502, false],
+    [404, "MODEL_NOT_FOUND", 502, false],
+    [429, "MODEL_RATE_LIMITED", 429, true],
+    [400, "PROVIDER_REQUEST_REJECTED", 502, false],
+    [503, "MODEL_UPSTREAM_ERROR", 502, true]
+  ])(
+    "maps a real HTTP provider %i response to %s",
+    async (providerStatus, code, httpStatus, retryable) => {
+      providerReply = { status: providerStatus, body: JSON.stringify({ error: { message: "sensitive upstream detail" } }) };
+      const { adapter } = createAdapter();
+
+      await expect(
+        adapter.execute({
+          ...input,
+          snapshot: { ...snapshot, provider: { ...snapshot.provider, baseUrl: providerBaseUrl } }
+        })
+      ).rejects.toMatchObject({
+        chatFailure: { httpStatus, code, message: expect.not.stringContaining("sensitive upstream detail"), retryable }
+      });
+    }
+  );
+
+  it.each([
+    ["not-json", "PROVIDER_INVALID_RESPONSE"],
+    [JSON.stringify({ choices: "invalid-schema" }), "MODEL_INVALID_OUTPUT"],
+    [JSON.stringify({ choices: [{ message: { content: "" } }] }), "MODEL_INVALID_OUTPUT"],
+    [JSON.stringify({ choices: [{ message: { tool_calls: [{ id: "forbidden" }] } }] }), "TOOL_NOT_ALLOWED"]
+  ])("validates a real HTTP provider body without falling back to tools (%s)", async (body, code) => {
+    providerReply = { status: 200, body };
+    const { adapter } = createAdapter();
+
+    await expect(
+      adapter.execute({
+        ...input,
+        snapshot: { ...snapshot, provider: { ...snapshot.provider, baseUrl: providerBaseUrl } }
+      })
+    ).rejects.toMatchObject({ chatFailure: expect.objectContaining({ code }) });
+  });
+
+  it("maps an actual provider transport failure", async () => {
+    const { adapter } = createAdapter();
+    await expect(
+      adapter.execute({
+        ...input,
+        snapshot: { ...snapshot, provider: { ...snapshot.provider, baseUrl: "http://127.0.0.1:1/v1" } }
+      })
+    ).rejects.toMatchObject({
+      chatFailure: expect.objectContaining({ httpStatus: 502, code: "PROVIDER_TRANSPORT_ERROR", retryable: true })
+    });
+  });
+
+  it("maps abort while waiting on a real provider response to MODEL_TIMEOUT", async () => {
+    providerReply = { status: 200, body: "", hold: true };
+    const { adapter } = createAdapter();
+    const controller = new AbortController();
+    const result = adapter.execute({
+      ...input,
+      signal: controller.signal,
+      snapshot: { ...snapshot, provider: { ...snapshot.provider, baseUrl: providerBaseUrl } }
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+
+    await expect(result).rejects.toMatchObject({
+      chatFailure: expect.objectContaining({ httpStatus: 504, code: "MODEL_TIMEOUT", retryable: true })
+    });
+  });
+
+  it("rejects an oversized real HTTP body before reading it", async () => {
+    providerReply = {
+      status: 200,
+      body: "x",
+      headers: { "content-length": String(1024 * 1024 + 1) }
+    };
+    const { adapter } = createAdapter();
+
+    await expect(
+      adapter.execute({
+        ...input,
+        snapshot: { ...snapshot, provider: { ...snapshot.provider, baseUrl: providerBaseUrl } }
+      })
+    ).rejects.toMatchObject({
+      chatFailure: expect.objectContaining({ code: "PROVIDER_RESPONSE_TOO_LARGE", retryable: false })
+    });
+  });
+
+  it("stops reading a real chunked HTTP body after one MiB", async () => {
+    providerReply = { status: 200, body: "x".repeat(1024 * 1024 + 1) };
+    const { adapter } = createAdapter();
+
+    await expect(
+      adapter.execute({
+        ...input,
+        snapshot: { ...snapshot, provider: { ...snapshot.provider, baseUrl: providerBaseUrl } }
+      })
+    ).rejects.toMatchObject({
+      chatFailure: expect.objectContaining({ code: "PROVIDER_RESPONSE_TOO_LARGE", retryable: false })
+    });
+  });
+
   it("holds an injected late success until the fake timeout boundary", async () => {
     const { adapter, control, clockWaiters } = createAdapter({ late_success: true });
     const result = adapter.execute({ ...input, snapshot: { ...snapshot, testNamespace: "namespace-1" } });
-    await Promise.resolve();
+    for (let index = 0; index < 10 && control.waitForClock.mock.calls.length === 0; index += 1) {
+      await Promise.resolve();
+    }
 
-    expect(control.waitForClock).toHaveBeenCalledWith("namespace-1", 60_000);
+    expect(control.waitForClock).toHaveBeenCalledWith("namespace-1", 60_000, undefined);
     expect(clockWaiters).toHaveLength(1);
     clockWaiters[0]!();
 
     await expect(result).resolves.toEqual({ text: "late success" });
-    expect(control.checkpoint).toHaveBeenCalledWith("namespace-1", "afterTimeoutBeforeLateResult");
+    expect(control.checkpoint).toHaveBeenCalledWith("namespace-1", "afterTimeoutBeforeLateResult", undefined);
   });
 });

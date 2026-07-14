@@ -25,9 +25,11 @@ export interface ChatConfigurationSnapshot {
     workflowKey: "default";
     activeHash: string;
     source: string;
+    executable: unknown;
   };
   versionVector: string;
   testNamespace?: string;
+  testGeneration?: number;
 }
 
 export interface ChatTranscriptEntry {

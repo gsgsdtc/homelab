@@ -49,6 +49,7 @@ interface BarrierState {
 interface ClockWaiter {
   target: number;
   resolve: () => void;
+  reject: (error: unknown) => void;
 }
 
 interface NamespaceState {
@@ -66,6 +67,7 @@ interface NamespaceState {
 @Injectable()
 export class ChatTestControlService {
   private readonly namespaces = new Map<string, NamespaceState>();
+  private readonly resetHandlers = new Set<(namespace: string, nextGeneration: number) => void>();
   private readonly enabled: boolean;
 
   constructor(options: { enabled?: boolean } = {}) {
@@ -90,11 +92,17 @@ export class ChatTestControlService {
     for (const barrier of current.barriers.values()) {
       barrier.waiters.splice(0).forEach((release) => release());
     }
-    for (const waiter of current.clockWaiters.values()) waiter.resolve();
+    for (const waiter of current.clockWaiters.values()) waiter.reject(this.resetError());
     current.clockWaiters.clear();
     const reset = this.freshState(id, current.generation + 1);
     this.namespaces.set(id, reset);
+    for (const handler of this.resetHandlers) handler(id, reset.generation);
     return this.publicState(reset);
+  }
+
+  registerResetHandler(handler: (namespace: string, nextGeneration: number) => void): () => void {
+    this.resetHandlers.add(handler);
+    return () => this.resetHandlers.delete(handler);
   }
 
   delete(id: string): void {
@@ -116,8 +124,8 @@ export class ChatTestControlService {
     return [...this.namespaces.keys()].sort();
   }
 
-  now(id?: string): number {
-    return id ? this.requireNamespace(id).now : Date.now();
+  now(id?: string, expectedGeneration?: number): number {
+    return id ? this.requireNamespace(id, expectedGeneration).now : Date.now();
   }
 
   generation(id?: string): number {
@@ -140,17 +148,19 @@ export class ChatTestControlService {
     return { now: state.now };
   }
 
-  waitForClock(id: string, target: number): { promise: Promise<void>; cancel: () => void } {
-    const state = this.requireNamespace(id);
+  waitForClock(id: string, target: number, expectedGeneration?: number): { promise: Promise<void>; cancel: () => void } {
+    const state = this.requireNamespace(id, expectedGeneration);
     if (!Number.isFinite(target) || target <= state.now) {
       return { promise: Promise.resolve(), cancel: () => undefined };
     }
     const key = Symbol("chat-clock-waiter");
     let resolve!: () => void;
-    const promise = new Promise<void>((done) => {
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<void>((done, fail) => {
       resolve = done;
+      reject = fail;
     });
-    state.clockWaiters.set(key, { target, resolve });
+    state.clockWaiters.set(key, { target, resolve, reject });
     this.touch(state);
     return {
       promise,
@@ -171,13 +181,13 @@ export class ChatTestControlService {
     return { faults: { ...state.faults } };
   }
 
-  fault(id: string | undefined, key: string): boolean {
-    return id ? Boolean(this.requireNamespace(id).faults[key]) : false;
+  fault(id: string | undefined, key: string, expectedGeneration?: number): boolean {
+    return id ? Boolean(this.requireNamespace(id, expectedGeneration).faults[key]) : false;
   }
 
-  increment(id: string | undefined, counter: ChatTestCounter): void {
+  increment(id: string | undefined, counter: ChatTestCounter, expectedGeneration?: number): void {
     if (!id) return;
-    const state = this.requireNamespace(id);
+    const state = this.requireNamespace(id, expectedGeneration);
     state.counters[counter] += 1;
     this.touch(state);
   }
@@ -192,13 +202,14 @@ export class ChatTestControlService {
     return { key, enabled: true };
   }
 
-  async checkpoint(id: string | undefined, key: ChatTestBarrierKey): Promise<void> {
+  async checkpoint(id: string | undefined, key: ChatTestBarrierKey, expectedGeneration?: number): Promise<void> {
     if (!id) return;
-    const state = this.requireNamespace(id);
+    const state = this.requireNamespace(id, expectedGeneration);
     const barrier = state.barriers.get(key);
     if (!barrier?.enabled) return;
     this.touch(state);
     await new Promise<void>((resolve) => barrier.waiters.push(resolve));
+    this.requireNamespace(id, expectedGeneration);
   }
 
   releaseBarrier(id: string, key: string) {
@@ -215,7 +226,7 @@ export class ChatTestControlService {
     return { key, released: true };
   }
 
-  observe(id: string | undefined, observation: Record<string, unknown>): void {
+  observe(id: string | undefined, observation: Record<string, unknown>, expectedGeneration?: number): void {
     if (!id) return;
     const serialized = JSON.stringify(observation);
     if (
@@ -225,7 +236,7 @@ export class ChatTestControlService {
     ) {
       throw new ChatApiException(400, "SENSITIVE_OBSERVATION", "Observation contains a prohibited field or value");
     }
-    const state = this.requireNamespace(id);
+    const state = this.requireNamespace(id, expectedGeneration);
     state.observations.push({ ...observation });
     this.touch(state);
   }
@@ -271,12 +282,15 @@ export class ChatTestControlService {
     };
   }
 
-  private requireNamespace(id: string): NamespaceState {
+  private requireNamespace(id: string, expectedGeneration?: number): NamespaceState {
     this.assertEnabled();
     this.cleanup();
     const state = this.namespaces.get(id);
     if (!state) {
       throw new ChatApiException(404, "TEST_NAMESPACE_NOT_FOUND", "Chat test namespace not found");
+    }
+    if (expectedGeneration !== undefined && state.generation !== expectedGeneration) {
+      throw this.resetError();
     }
     this.touch(state);
     return state;
@@ -304,6 +318,17 @@ export class ChatTestControlService {
     if (!this.enabled) {
       throw new ChatApiException(404, "NOT_FOUND", "Not found");
     }
+  }
+
+  private resetError() {
+    return Object.assign(new Error("Chat test namespace was reset"), {
+      chatFailure: {
+        httpStatus: 409,
+        code: "TEST_NAMESPACE_RESET",
+        message: "Chat test namespace was reset",
+        retryable: false
+      }
+    });
   }
 
   private isBarrierKey(key: string): key is ChatTestBarrierKey {

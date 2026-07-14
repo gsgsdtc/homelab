@@ -29,7 +29,7 @@ describe("DynamicImportMastraWorkflowRuntimeRegistry", () => {
     const result = await registry.reloadWorkflow({
       agentId: "agent-1",
       workflowKey: "support-triage",
-      sourceHash: "hash-v2",
+      sourceHash: "hash-basic-v2",
       relativePath: ".homelab/agents/ops-agent--agent123/src/mastra/workflows/support-triage.ts",
       sourcePath,
       extension: "ts"
@@ -99,6 +99,47 @@ describe("DynamicImportMastraWorkflowRuntimeRegistry", () => {
 
     expect(result).toEqual({ status: "succeeded", loadedAt: expect.any(Date) });
     expect(registry.getWorkflow("agent-1", "support-triage")).toBeDefined();
+  });
+
+  it("retains immutable executables by source hash after a newer reload", async () => {
+    await writeWorkflow("support-triage.ts", 'export default { id: "v1" };\n');
+    const registry = new DynamicImportMastraWorkflowRuntimeRegistry();
+    await registry.reloadWorkflow({
+      agentId: "agent-1",
+      workflowKey: "support-triage",
+      sourceHash: "hash-v1",
+      relativePath: ".homelab/agents/ops-agent--agent123/src/mastra/workflows/support-triage.ts",
+      sourcePath: workflowPath("support-triage.ts"),
+      extension: "ts"
+    });
+    await writeWorkflow("support-triage.ts", 'export default { id: "v2" };\n');
+    await registry.reloadWorkflow({
+      agentId: "agent-1",
+      workflowKey: "support-triage",
+      sourceHash: "hash-retained-v2",
+      relativePath: ".homelab/agents/ops-agent--agent123/src/mastra/workflows/support-triage.ts",
+      sourcePath: workflowPath("support-triage.ts"),
+      extension: "ts"
+    });
+
+    expect(registry.getWorkflow("agent-1", "support-triage", "hash-v1")).toEqual({ id: "v1" });
+    expect(registry.getWorkflow("agent-1", "support-triage", "hash-retained-v2")).toEqual({ id: "v2" });
+    expect(registry.getWorkflow("agent-1", "support-triage")).toEqual({ id: "v2" });
+  });
+
+  it("loads an immutable DB workflow source by active hash when the runtime cache is cold", async () => {
+    const registry = new DynamicImportMastraWorkflowRuntimeRegistry();
+
+    const executable = await registry.loadWorkflowVersion({
+      agentId: "agent-1",
+      workflowKey: "default",
+      sourceHash: "hash-db-v1",
+      source: 'export default { id: "default", committed: true };\n',
+      extension: "ts"
+    });
+
+    expect(executable).toEqual({ id: "default", committed: true });
+    expect(registry.getWorkflow("agent-1", "default", "hash-db-v1")).toBe(executable);
   });
 
   function workflowPath(fileName: string): string {

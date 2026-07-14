@@ -47,7 +47,7 @@ describe("ChatConfigSnapshotService", () => {
       }),
       readVersionVector: jest.fn(() => Promise.resolve(vectors[Math.min(vectorIndex++, vectors.length - 1)]))
     };
-    const testControl = { checkpoint: jest.fn(), increment: jest.fn(), fault: jest.fn() };
+    const testControl = { checkpoint: jest.fn(), increment: jest.fn(), fault: jest.fn(), generation: jest.fn(() => 0) };
     const service = new snapshotModule!.ChatConfigSnapshotService(source, testControl);
     return { service, source, testControl };
   }

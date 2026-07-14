@@ -46,6 +46,13 @@ import {
     AgentWorkflowRuntimeClient,
     AgentWorkflowSnapshotService
   ],
-  exports: [AgentsService, AgentWorkspaceService, AgentSkillsService, AgentWorkflowsService, AgentWorkflowSnapshotService]
+  exports: [
+    AgentsService,
+    AgentWorkspaceService,
+    AgentSkillsService,
+    AgentWorkflowsService,
+    AgentWorkflowSnapshotService,
+    MASTRA_WORKFLOW_RUNTIME_REGISTRY
+  ]
 })
 export class AgentsModule {}

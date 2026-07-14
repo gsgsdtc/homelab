@@ -34,7 +34,9 @@ describe("P0 chat backend contract", () => {
   function createHarness(
     options: {
       execute?: jest.Mock;
+      countTokens?: jest.Mock;
       now?: () => number;
+      randomId?: (prefix: string) => string;
       timeout?: () => { promise: Promise<void>; cancel: () => void };
     } = {}
   ) {
@@ -55,11 +57,13 @@ describe("P0 chat backend contract", () => {
         jest.fn().mockResolvedValue({
           text: "Acknowledged."
         }),
-      countTokens: jest.fn((value: string) => [...value].length)
+      countTokens: options.countTokens ?? jest.fn((value: string) => [...value].length)
     };
     const service = new chatModule!.ChatSessionService(snapshot, adapter, {
       now: options.now ?? (() => Date.parse("2026-07-14T00:00:00.000Z")),
-      randomId: jest.fn((prefix: string) => `${prefix}_${Math.random().toString(36).slice(2).padEnd(20, "0")}`),
+      randomId:
+        options.randomId ??
+        jest.fn((prefix: string) => `${prefix}_${Math.random().toString(36).slice(2).padEnd(20, "0")}`),
       timeout: options.timeout
     });
     return { service, snapshot, adapter };
@@ -81,7 +85,8 @@ describe("P0 chat backend contract", () => {
         maxLogicalMessages: 20,
         maxAttemptsPerMessage: 3,
         maxTranscriptBytes: 524288,
-        maxContextTokens: 32000
+        maxContextTokens: 32000,
+        maxRetainedTombstones: 100
       })
     );
   });
@@ -168,6 +173,27 @@ describe("P0 chat backend contract", () => {
       status: 404,
       response: expect.objectContaining({ code: "CHAT_SESSION_NOT_FOUND" })
     });
+  });
+
+  it("checks session ownership before malformed payloads to prevent enumeration", async () => {
+    const { service, adapter } = createHarness();
+    const session = await service.createSession(userId, agentId);
+
+    await expect(
+      service.sendMessage("other-admin", agentId, session.sessionId, {
+        clientMessageId: "short",
+        content: "\u0085",
+        retryOfClientMessageId: "bad"
+      })
+    ).rejects.toMatchObject({ status: 404, response: expect.objectContaining({ code: "CHAT_SESSION_NOT_FOUND" }) });
+    await expect(
+      service.sendMessage(userId, "other-agent", session.sessionId, {
+        clientMessageId: "short",
+        content: "\u0085",
+        retryOfClientMessageId: "bad"
+      })
+    ).rejects.toMatchObject({ status: 404, response: expect.objectContaining({ code: "CHAT_SESSION_NOT_FOUND" }) });
+    expect(adapter.execute).not.toHaveBeenCalled();
   });
 
   it("keeps expired sessions as tombstones for exact id replay", async () => {
@@ -261,6 +287,52 @@ describe("P0 chat backend contract", () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the started execution on its frozen snapshot and captures updates only for the next message", async () => {
+    let releaseFirst!: (value: { text: string }) => void;
+    const execute = jest
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ text: string }>((resolve) => {
+            releaseFirst = resolve;
+          })
+      )
+      .mockResolvedValueOnce({ text: "reply from v2" });
+    const { service, snapshot, adapter } = createHarness({ execute });
+    const frozen = (version: string) => ({
+      provider: { id: `provider-${version}`, baseUrl: "https://provider.test", apiKey: "secret", model: "gpt-test" },
+      soul: `soul-${version}`,
+      soulRevision: `soul-${version}`,
+      skills: { skill: { configVersion: `cfg-${version}` } },
+      workflow: {
+        workflowKey: "default",
+        activeHash: `workflow-${version}`,
+        source: "model-only",
+        executable: { id: version }
+      },
+      versionVector: `vector-${version}`
+    });
+    snapshot.capture.mockReset().mockResolvedValueOnce(frozen("v1")).mockResolvedValueOnce(frozen("v2"));
+    const session = await service.createSession(userId, agentId);
+    const first = service.sendMessage(userId, agentId, session.sessionId, {
+      clientMessageId: validId,
+      content: "first",
+      retryOfClientMessageId: null
+    });
+    for (let index = 0; index < 10 && adapter.execute.mock.calls.length === 0; index += 1) await Promise.resolve();
+
+    expect(adapter.execute.mock.calls[0]![0].snapshot).toEqual(frozen("v1"));
+    releaseFirst({ text: "reply from v1" });
+    await expect(first).resolves.toEqual({ httpStatus: 200, body: expect.objectContaining({ reply: "reply from v1" }) });
+    await service.sendMessage(userId, agentId, session.sessionId, {
+      clientMessageId: "Message_987654321",
+      content: "second",
+      retryOfClientMessageId: null
+    });
+
+    expect(adapter.execute.mock.calls[1]![0].snapshot).toEqual(frozen("v2"));
+  });
+
   it("blocks new IDs after the session reaches its context limit", async () => {
     const { service, adapter } = createHarness({ execute: jest.fn().mockResolvedValue({ text: "x".repeat(32_000) }) });
     const session = await service.createSession(userId, agentId);
@@ -298,7 +370,7 @@ describe("P0 chat backend contract", () => {
     await expect(
       service.sendMessage(userId, agentId, session.sessionId, {
         clientMessageId: validId,
-        content: "\u2003\n\t",
+        content: "\u0009\u000A\u000B\u000C\u000D\u0020\u0085\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000",
         retryOfClientMessageId: null
       })
     ).rejects.toMatchObject({ status: 400, response: expect.objectContaining({ code: "INVALID_MESSAGE_CONTENT" }) });
@@ -310,5 +382,77 @@ describe("P0 chat backend contract", () => {
       })
     ).rejects.toMatchObject({ status: 400, response: expect.objectContaining({ code: "MESSAGE_TOO_LONG" }) });
     expect(adapter.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([7_999, 8_000])("accepts exactly %s Unicode code points", async (codePoints) => {
+    const { service, adapter } = createHarness();
+    const session = await service.createSession(userId, agentId);
+
+    const result = await service.sendMessage(userId, agentId, session.sessionId, {
+      clientMessageId: validId,
+      content: "😀".repeat(codePoints),
+      retryOfClientMessageId: null
+    });
+
+    expect(result.httpStatus).toBe(200);
+    expect(adapter.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds retained tombstones under high-frequency session churn", async () => {
+    let sequence = 0;
+    const snapshot = {
+      getEligibility: jest.fn().mockResolvedValue(eligibility),
+      capture: jest.fn()
+    };
+    const adapter = { execute: jest.fn(), countTokens: jest.fn() };
+    const service = new chatModule!.ChatSessionService(snapshot, adapter, {
+      now: () => Date.parse("2026-07-14T00:00:00.000Z"),
+      randomId: jest.fn((prefix: string) => `${prefix}_${String(sequence++).padStart(20, "0")}`)
+    });
+    const sessions: string[] = [];
+    for (let index = 0; index < 106; index += 1) {
+      sessions.push((await service.createSession(userId, agentId)).sessionId);
+    }
+    const request = { clientMessageId: validId, content: "hello", retryOfClientMessageId: null };
+
+    await expect(service.sendMessage(userId, agentId, sessions[0]!, request)).rejects.toMatchObject({
+      status: 404,
+      response: expect.objectContaining({ code: "CHAT_SESSION_NOT_FOUND" })
+    });
+    await expect(service.sendMessage(userId, agentId, sessions[1]!, request)).rejects.toMatchObject({
+      status: 410,
+      response: expect.objectContaining({ code: "CHAT_SESSION_EVICTED" })
+    });
+  });
+
+  it("bounds retained tombstone bytes even when terminal DTOs contain maximum replies", async () => {
+    let sequence = 0;
+    const largeReply = "😀".repeat(32_000);
+    const { service } = createHarness({
+      execute: jest.fn().mockResolvedValue({ text: largeReply }),
+      countTokens: jest.fn(() => 0),
+      randomId: (prefix: string) => `${prefix}_${String(sequence++).padStart(20, "0")}`
+    });
+    const sessions: string[] = [];
+    for (let index = 0; index < 80; index += 1) {
+      const session = await service.createSession(userId, agentId);
+      sessions.push(session.sessionId);
+      const result = await service.sendMessage(userId, agentId, session.sessionId, {
+        clientMessageId: `Message_${String(index).padStart(16, "0")}`,
+        content: "hello",
+        retryOfClientMessageId: null
+      });
+      expect(result.httpStatus).toBe(200);
+    }
+    const request = { clientMessageId: validId, content: "hello", retryOfClientMessageId: null };
+
+    await expect(service.sendMessage(userId, agentId, sessions[0]!, request)).rejects.toMatchObject({
+      status: 404,
+      response: expect.objectContaining({ code: "CHAT_SESSION_NOT_FOUND" })
+    });
+    await expect(service.sendMessage(userId, agentId, sessions[74]!, request)).rejects.toMatchObject({
+      status: 410,
+      response: expect.objectContaining({ code: "CHAT_SESSION_EVICTED" })
+    });
   });
 });

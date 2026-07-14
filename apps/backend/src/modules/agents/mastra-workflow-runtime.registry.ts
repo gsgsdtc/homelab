@@ -16,6 +16,16 @@ export interface MastraWorkflowRuntimeReloadRequest {
 
 export interface MastraWorkflowRuntimeRegistry {
   reloadWorkflow(request: MastraWorkflowRuntimeReloadRequest): Promise<ReloadWorkflowResult>;
+  getWorkflow(agentId: string, workflowKey: string, sourceHash?: string): unknown;
+  loadWorkflowVersion(request: MastraWorkflowRuntimeVersionRequest): Promise<unknown>;
+}
+
+export interface MastraWorkflowRuntimeVersionRequest {
+  agentId: string;
+  workflowKey: string;
+  sourceHash: string;
+  source: string;
+  extension: "ts" | "js";
 }
 
 export const MASTRA_WORKFLOW_RUNTIME_REGISTRY = Symbol("MASTRA_WORKFLOW_RUNTIME_REGISTRY");
@@ -26,6 +36,7 @@ type ModuleWithLoad = typeof Module & {
 @Injectable()
 export class DynamicImportMastraWorkflowRuntimeRegistry implements MastraWorkflowRuntimeRegistry {
   private readonly workflows = new Map<string, unknown>();
+  private readonly workflowVersions = new Map<string, unknown>();
   private readonly requireModule = createRequire(__filename);
 
   async reloadWorkflow(request: MastraWorkflowRuntimeReloadRequest): Promise<ReloadWorkflowResult> {
@@ -41,6 +52,7 @@ export class DynamicImportMastraWorkflowRuntimeRegistry implements MastraWorkflo
         };
       }
       this.workflows.set(this.key(request.agentId, request.workflowKey), workflow);
+      this.workflowVersions.set(this.versionKey(request.agentId, request.workflowKey, request.sourceHash), workflow);
       return {
         status: "succeeded",
         loadedAt: new Date()
@@ -53,12 +65,37 @@ export class DynamicImportMastraWorkflowRuntimeRegistry implements MastraWorkflo
     }
   }
 
-  getWorkflow(agentId: string, workflowKey: string): unknown {
+  getWorkflow(agentId: string, workflowKey: string, sourceHash?: string): unknown {
+    if (sourceHash) return this.workflowVersions.get(this.versionKey(agentId, workflowKey, sourceHash));
     return this.workflows.get(this.key(agentId, workflowKey));
+  }
+
+  async loadWorkflowVersion(request: MastraWorkflowRuntimeVersionRequest): Promise<unknown> {
+    const existing = this.getWorkflow(request.agentId, request.workflowKey, request.sourceHash);
+    if (existing) return existing;
+    const cacheRoot = this.compiledWorkflowRoot(request);
+    await mkdir(cacheRoot, { recursive: true });
+    const sourcePath = join(cacheRoot, `immutable-source.${request.extension}`);
+    await writeFile(sourcePath, request.source, "utf8");
+    const importPath = await this.transpileWorkflowToCommonJs({
+      ...request,
+      relativePath: sourcePath,
+      sourcePath
+    });
+    delete this.requireModule.cache[this.requireModule.resolve(importPath)];
+    const workflowModule = (Module as ModuleWithLoad)._load(importPath, module, false) as Record<string, unknown>;
+    const workflow = this.defaultExportFromModule(workflowModule);
+    if (!workflow) throw new Error("Mastra workflow module must default export a workflow");
+    this.workflowVersions.set(this.versionKey(request.agentId, request.workflowKey, request.sourceHash), workflow);
+    return workflow;
   }
 
   private key(agentId: string, workflowKey: string): string {
     return `${agentId}:${workflowKey}`;
+  }
+
+  private versionKey(agentId: string, workflowKey: string, sourceHash: string): string {
+    return `${this.key(agentId, workflowKey)}:${sourceHash}`;
   }
 
   private defaultExportFromModule(workflowModule: Record<string, unknown>): unknown {
@@ -119,7 +156,7 @@ export class DynamicImportMastraWorkflowRuntimeRegistry implements MastraWorkflo
     return cachePath;
   }
 
-  private compiledWorkflowRoot(request: MastraWorkflowRuntimeReloadRequest): string {
+  private compiledWorkflowRoot(request: Pick<MastraWorkflowRuntimeReloadRequest, "agentId" | "workflowKey" | "sourceHash">): string {
     const safeAgentId = this.safeCacheSegment(request.agentId);
     const safeWorkflowKey = this.safeCacheSegment(request.workflowKey);
     const safeHash = this.safeCacheSegment(request.sourceHash);

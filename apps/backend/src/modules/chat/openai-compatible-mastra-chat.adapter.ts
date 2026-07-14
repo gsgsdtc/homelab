@@ -3,6 +3,7 @@ import { Buffer } from "buffer";
 import { ChatTestControlService } from "../chat-test-control/chat-test-control.service";
 import { executionError } from "./chat.errors";
 import { MastraChatAdapter, MastraChatExecuteInput } from "./mastra-chat.adapter";
+import { MastraChatRuntimeExecutor, MastraWorkflowExecutable } from "./mastra-chat-runtime.executor";
 
 const MAX_PROVIDER_BODY_BYTES = 1024 * 1024;
 const MAX_REPLY_CODE_POINTS = 32000;
@@ -15,25 +16,71 @@ type AdapterControl = Pick<
 
 @Injectable()
 export class OpenAICompatibleMastraChatAdapter implements MastraChatAdapter {
-  constructor(@Inject(ChatTestControlService) private readonly testControl: AdapterControl) {}
+  constructor(
+    @Inject(ChatTestControlService) private readonly testControl: AdapterControl,
+    private readonly runtime: MastraChatRuntimeExecutor
+  ) {}
 
   async execute(input: MastraChatExecuteInput): Promise<{ text: string }> {
     const namespace = input.snapshot.testNamespace;
-    this.testControl.increment(namespace, "adapterCalls");
-    await this.testControl.checkpoint(namespace, "beforeExecute");
-    this.assertModelOnly(input.snapshot.workflow.source);
-    if (this.testControl.fault(namespace, "runtime_unavailable")) {
+    const generation = input.snapshot.testGeneration;
+    this.testControl.increment(namespace, "adapterCalls", generation);
+    await this.testControl.checkpoint(namespace, "beforeExecute", generation);
+    if (this.testControl.fault(namespace, "runtime_unavailable", generation)) {
       throw this.failure(503, "RUNTIME_UNAVAILABLE", "Chat runtime is unavailable", true);
     }
-    this.testControl.increment(namespace, "runtimeCalls");
-    this.testControl.increment(namespace, "modelCalls");
-    if (this.testControl.fault(namespace, "late_success")) {
-      const deadline = this.testControl.now(namespace) + 60_000;
-      await this.testControl.waitForClock(namespace!, deadline).promise;
-      await this.testControl.checkpoint(namespace, "afterTimeoutBeforeLateResult");
+    this.testControl.increment(namespace, "runtimeCalls", generation);
+    const output = await this.runtime.execute(
+      input.snapshot.workflow.executable as MastraWorkflowExecutable,
+      {
+        executionId: input.executionId,
+        workflowSource: input.snapshot.workflow.source,
+        soul: input.snapshot.soul,
+        skills: input.snapshot.skills,
+        transcript: input.transcript,
+        message: input.message,
+        signal: input.signal
+      },
+      () => this.invokeProvider(input)
+    );
+    // A provider/workflow may settle after cancellation. Never let that late
+    // result become observable or overwrite the session's terminal timeout.
+    if (input.signal.aborted) {
+      throw this.failure(504, "MODEL_TIMEOUT", "Model execution timed out", true);
+    }
+    const text = output.text;
+    if (typeof text !== "string" || text.length === 0) {
+      throw this.failure(502, "MODEL_INVALID_OUTPUT", "Model returned invalid output", false);
+    }
+    if ([...text].length > MAX_REPLY_CODE_POINTS || Buffer.byteLength(text, "utf8") > MAX_REPLY_BYTES) {
+      throw this.failure(502, "MODEL_OUTPUT_TOO_LARGE", "Model output is too large", false);
+    }
+    this.testControl.observe(namespace, {
+      requestId: input.requestId,
+      executionId: input.executionId,
+      stage: "adapter",
+      providerId: input.snapshot.provider.id,
+      workflowHash: input.snapshot.workflow.activeHash,
+      resultCode: "SUCCEEDED"
+    }, generation);
+    return { text };
+  }
+
+  countTokens(value: string): number {
+    return [...value].length;
+  }
+
+  private async invokeProvider(input: MastraChatExecuteInput): Promise<{ text: string }> {
+    const namespace = input.snapshot.testNamespace;
+    const generation = input.snapshot.testGeneration;
+    this.testControl.increment(namespace, "modelCalls", generation);
+    if (this.testControl.fault(namespace, "late_success", generation)) {
+      const deadline = this.testControl.now(namespace, generation) + 60_000;
+      await this.testControl.waitForClock(namespace!, deadline, generation).promise;
+      await this.testControl.checkpoint(namespace, "afterTimeoutBeforeLateResult", generation);
       return { text: "late success" };
     }
-    this.injectProviderFault(namespace);
+    this.injectProviderFault(namespace, generation);
 
     let response: Response;
     try {
@@ -89,27 +136,10 @@ export class OpenAICompatibleMastraChatAdapter implements MastraChatAdapter {
     if ([...text].length > MAX_REPLY_CODE_POINTS || Buffer.byteLength(text, "utf8") > MAX_REPLY_BYTES) {
       throw this.failure(502, "MODEL_OUTPUT_TOO_LARGE", "Model output is too large", false);
     }
-    this.testControl.observe(namespace, {
-      executionId: input.executionId,
-      stage: "adapter",
-      providerId: input.snapshot.provider.id,
-      workflowHash: input.snapshot.workflow.activeHash,
-      resultCode: "SUCCEEDED"
-    });
     return { text };
   }
 
-  countTokens(value: string): number {
-    return [...value].length;
-  }
-
-  private assertModelOnly(source: string): void {
-    if (/\b(?:tools?|tool_calls?|executeTool|registerTool)\b/i.test(source)) {
-      throw this.failure(422, "TOOL_NOT_ALLOWED", "Tools are not allowed in P0 chat", false);
-    }
-  }
-
-  private injectProviderFault(namespace?: string): void {
+  private injectProviderFault(namespace?: string, generation?: number): void {
     const faults: Array<[string, number, string, string, boolean]> = [
       ["provider_401", 502, "PROVIDER_AUTH_FAILED", "Model provider authentication failed", false],
       ["model_not_found", 502, "MODEL_NOT_FOUND", "Configured model was not found", false],
@@ -124,7 +154,7 @@ export class OpenAICompatibleMastraChatAdapter implements MastraChatAdapter {
       ["timeout", 504, "MODEL_TIMEOUT", "Model execution timed out", true]
     ];
     for (const [fault, status, code, message, retryable] of faults) {
-      if (this.testControl.fault(namespace, fault)) {
+      if (this.testControl.fault(namespace, fault, generation)) {
         throw this.failure(status, code, message, retryable);
       }
     }

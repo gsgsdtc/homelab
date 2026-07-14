@@ -10,7 +10,7 @@ type SnapshotSource = Pick<
   ChatConfigSourceService,
   "getAgent" | "resolveProvider" | "readSoul" | "readSkills" | "readWorkflow" | "readVersionVector"
 >;
-type SnapshotControl = Pick<ChatTestControlService, "checkpoint" | "increment" | "fault">;
+type SnapshotControl = Pick<ChatTestControlService, "checkpoint" | "increment" | "fault" | "generation">;
 
 @Injectable()
 export class ChatConfigSnapshotService {
@@ -52,8 +52,9 @@ export class ChatConfigSnapshotService {
     }
   }
 
-  async capture(agentId: string, testNamespace?: string): Promise<ChatConfigurationSnapshot> {
-    if (this.testControl.fault(testNamespace, "config_read_error")) {
+  async capture(agentId: string, testNamespace?: string, expectedGeneration?: number): Promise<ChatConfigurationSnapshot> {
+    const testGeneration = testNamespace ? (expectedGeneration ?? this.testControl.generation(testNamespace)) : undefined;
+    if (this.testControl.fault(testNamespace, "config_read_error", testGeneration)) {
       throw executionError({
         httpStatus: 500,
         code: "CONFIG_READ_FAILED",
@@ -63,17 +64,17 @@ export class ChatConfigSnapshotService {
     }
 
     for (let attempt = 1; attempt <= 3; attempt += 1) {
-      this.testControl.increment(testNamespace, "snapshotAttempts");
+      this.testControl.increment(testNamespace, "snapshotAttempts", testGeneration);
       const initialVector = await this.source.readVersionVector(agentId);
-      await this.testControl.checkpoint(testNamespace, "afterInitialVector");
+      await this.testControl.checkpoint(testNamespace, "afterInitialVector", testGeneration);
       const agent = await this.source.getAgent(agentId);
       if (agent.status !== AgentStatus.ready) {
         throw executionError({ httpStatus: 422, code: "AGENT_NOT_READY", message: "Agent is not ready", retryable: false });
       }
       const provider = await this.source.resolveProvider(agent);
-      await this.testControl.checkpoint(testNamespace, "afterProviderLoad");
+      await this.testControl.checkpoint(testNamespace, "afterProviderLoad", testGeneration);
       const soul = await this.source.readSoul(agent);
-      await this.testControl.checkpoint(testNamespace, "afterSoulLoad");
+      await this.testControl.checkpoint(testNamespace, "afterSoulLoad", testGeneration);
       if (soul.status === "error" || soul.content === null) {
         throw executionError({
           httpStatus: 422,
@@ -83,10 +84,10 @@ export class ChatConfigSnapshotService {
         });
       }
       const skills = await this.source.readSkills(agent);
-      await this.testControl.checkpoint(testNamespace, "afterSkillsLoad");
+      await this.testControl.checkpoint(testNamespace, "afterSkillsLoad", testGeneration);
       const workflow = await this.source.readWorkflow(agent);
-      await this.testControl.checkpoint(testNamespace, "afterWorkflowLoad");
-      await this.testControl.checkpoint(testNamespace, "beforeFinalVector");
+      await this.testControl.checkpoint(testNamespace, "afterWorkflowLoad", testGeneration);
+      await this.testControl.checkpoint(testNamespace, "beforeFinalVector", testGeneration);
       const finalVector = await this.source.readVersionVector(agentId);
       if (initialVector !== finalVector) {
         continue;
@@ -110,7 +111,8 @@ export class ChatConfigSnapshotService {
         ),
         workflow,
         versionVector: finalVector,
-        testNamespace
+        testNamespace,
+        testGeneration
       };
     }
 

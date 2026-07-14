@@ -18,6 +18,8 @@ const MAX_CONTEXT_TOKENS = 32000;
 const MAX_REPLY_CODE_POINTS = 32000;
 const MAX_REPLY_BYTES = 131072;
 const MAX_ACTIVE_SESSIONS = 5;
+const MAX_RETAINED_TOMBSTONES = 100;
+const MAX_RETAINED_TOMBSTONE_BYTES = 8 * 1024 * 1024;
 const EXECUTION_TIMEOUT_MS = 60000;
 
 export const CHAT_RUNTIME = Symbol("CHAT_RUNTIME");
@@ -26,9 +28,20 @@ interface ChatRuntime {
   now(testNamespace?: string): number;
   randomId(prefix: string): string;
   generation?(testNamespace?: string): number;
-  increment?(testNamespace: string | undefined, counter: "idempotentReplays"): void;
-  checkpoint?(testNamespace: string | undefined, key: "beforeExecute" | "afterExecuteBeforeCommit" | "afterTimeoutBeforeLateResult"): Promise<void>;
-  timeout?(testNamespace: string | undefined, milliseconds: number): { promise: Promise<void>; cancel: () => void };
+  increment?(testNamespace: string | undefined, counter: "idempotentReplays", generation?: number): void;
+  checkpoint?(
+    testNamespace: string | undefined,
+    key: "beforeExecute" | "afterExecuteBeforeCommit" | "afterTimeoutBeforeLateResult",
+    generation?: number
+  ): Promise<void>;
+  timeout?(
+    testNamespace: string | undefined,
+    milliseconds: number,
+    generation?: number
+  ): { promise: Promise<void>; cancel: () => void };
+  observe?(testNamespace: string | undefined, observation: Record<string, unknown>, generation?: number): void;
+  assertGeneration?(testNamespace: string | undefined, generation?: number): void;
+  registerResetHandler?(handler: (namespace: string, nextGeneration: number) => void): () => void;
 }
 
 interface StoredExecution {
@@ -44,6 +57,7 @@ interface StoredExecution {
   httpStatus?: number;
   body?: Record<string, unknown>;
   retryable?: boolean;
+  snapshotVersion?: string;
 }
 
 interface LogicalMessage {
@@ -85,7 +99,13 @@ export class ChatSessionService {
       now: () => Date.now(),
       randomId: (prefix) => `${prefix}_${randomUUID()}`
     }
-  ) {}
+  ) {
+    this.runtime.registerResetHandler?.((namespace) => {
+      for (const [id, session] of this.sessions) {
+        if (session.testNamespace === namespace) this.sessions.delete(id);
+      }
+    });
+  }
 
   getEligibility(agentId: string, testNamespace?: string) {
     return this.snapshots.getEligibility(agentId, testNamespace);
@@ -125,7 +145,8 @@ export class ChatSessionService {
       maxLogicalMessages: MAX_LOGICAL_MESSAGES,
       maxAttemptsPerMessage: MAX_ATTEMPTS,
       maxTranscriptBytes: MAX_TRANSCRIPT_BYTES,
-      maxContextTokens: MAX_CONTEXT_TOKENS
+      maxContextTokens: MAX_CONTEXT_TOKENS,
+      maxRetainedTombstones: MAX_RETAINED_TOMBSTONES
     };
   }
 
@@ -136,7 +157,6 @@ export class ChatSessionService {
     request: ChatMessageRequest,
     testNamespace?: string
   ): Promise<ChatHttpResult> {
-    this.validateRequest(request);
     const now = this.now(testNamespace);
     this.cleanup(now, testNamespace);
     const session = this.sessions.get(sessionId);
@@ -147,6 +167,7 @@ export class ChatSessionService {
       this.sessions.delete(session.id);
       throw this.rejection(404, "CHAT_SESSION_NOT_FOUND", "Chat session not found", request.clientMessageId);
     }
+    this.validateRequest(request);
     this.updateLifecycle(session, now);
     if (session.tombstonedAtMs !== undefined && now - session.tombstonedAtMs >= TOMBSTONE_TTL_MS) {
       this.sessions.delete(session.id);
@@ -158,7 +179,7 @@ export class ChatSessionService {
       if (existing.content !== request.content || existing.retryOfClientMessageId !== request.retryOfClientMessageId) {
         throw this.rejection(409, "IDEMPOTENCY_CONFLICT", "Message ID was already used with another payload", request.clientMessageId);
       }
-      this.runtime.increment?.(testNamespace, "idempotentReplays");
+      this.runtime.increment?.(testNamespace, "idempotentReplays", session.testGeneration);
       return this.replay(existing);
     }
 
@@ -202,7 +223,8 @@ export class ChatSessionService {
     session.idleExpiresAtMs = now + IDLE_TTL_MS;
 
     try {
-      const snapshot = await this.snapshots.capture(agentId, testNamespace);
+      const snapshot = await this.snapshots.capture(agentId, testNamespace, session.testGeneration);
+      execution.snapshotVersion = snapshot.versionVector;
       if (this.exceedsContext(session.transcript, request.content, snapshot)) {
         session.contextLimitReached = true;
         return this.failExecution(session, execution, {
@@ -212,9 +234,9 @@ export class ChatSessionService {
           retryable: false
         });
       }
-      await this.runtime.checkpoint?.(testNamespace, "beforeExecute");
+      await this.runtime.checkpoint?.(testNamespace, "beforeExecute", snapshot.testGeneration);
       const controller = new AbortController();
-      const timeout = this.startTimeout(testNamespace, EXECUTION_TIMEOUT_MS);
+      const timeout = this.startTimeout(testNamespace, EXECUTION_TIMEOUT_MS, snapshot.testGeneration);
       const timeoutPromise = timeout.promise.then<never>(() => {
         controller.abort();
         throw executionError({
@@ -228,6 +250,7 @@ export class ChatSessionService {
       try {
         output = await Promise.race([
           this.adapter.execute({
+            requestId: execution.requestId,
             executionId: execution.executionId,
             snapshot,
             transcript: session.transcript.map((item) => ({ ...item })),
@@ -239,7 +262,8 @@ export class ChatSessionService {
       } finally {
         timeout.cancel();
       }
-      await this.runtime.checkpoint?.(testNamespace, "afterExecuteBeforeCommit");
+      await this.runtime.checkpoint?.(testNamespace, "afterExecuteBeforeCommit", snapshot.testGeneration);
+      this.runtime.assertGeneration?.(testNamespace, snapshot.testGeneration);
       this.validateReply(output.text);
       const nextTranscript = [
         ...session.transcript,
@@ -261,6 +285,10 @@ export class ChatSessionService {
       session.transcript = nextTranscript;
       return this.succeedExecution(session, execution, output.text);
     } catch (error) {
+      if ((error as any)?.chatFailure?.code === "TEST_NAMESPACE_RESET") {
+        this.sessions.delete(session.id);
+        throw error;
+      }
       return this.failExecution(session, execution, failureFrom(error));
     }
   }
@@ -326,6 +354,7 @@ export class ChatSessionService {
     execution.completedAt = completedAt;
     execution.retryable = false;
     session.inFlightId = undefined;
+    this.observeExecution(session, execution, "SUCCEEDED");
     return { httpStatus: 200, body };
   }
 
@@ -351,6 +380,7 @@ export class ChatSessionService {
     execution.completedAt = completedAt;
     execution.retryable = failure.retryable;
     session.inFlightId = undefined;
+    this.observeExecution(session, execution, failure.code);
     return { httpStatus: failure.httpStatus, body };
   }
 
@@ -361,7 +391,7 @@ export class ChatSessionService {
     if (request.retryOfClientMessageId !== null && !/^[A-Za-z0-9_-]{16,64}$/.test(request.retryOfClientMessageId)) {
       throw this.rejection(400, "INVALID_RETRY_OF_ID", "Invalid retry target ID", request.clientMessageId);
     }
-    if (typeof request.content !== "string" || request.content.trim().length === 0) {
+    if (typeof request.content !== "string" || /^\p{White_Space}*$/u.test(request.content)) {
       throw this.rejection(400, "INVALID_MESSAGE_CONTENT", "Message content must not be blank", request.clientMessageId);
     }
     if ([...request.content].length > MAX_CODE_POINTS) {
@@ -417,6 +447,8 @@ export class ChatSessionService {
     if (!session.tombstoneReason && (now >= session.idleExpiresAtMs || now >= session.absoluteExpiresAtMs)) {
       session.tombstoneReason = "expired";
       session.tombstonedAtMs = Math.min(session.idleExpiresAtMs, session.absoluteExpiresAtMs);
+      session.transcript = [];
+      session.logicalMessages.clear();
     }
   }
 
@@ -428,6 +460,7 @@ export class ChatSessionService {
         this.sessions.delete(id);
       }
     }
+    this.enforceTombstoneBounds();
   }
 
   private evictIfRequired(userId: string, now: number, testNamespace?: string): void {
@@ -447,6 +480,39 @@ export class ChatSessionService {
     }
     victim.tombstoneReason = "evicted";
     victim.tombstonedAtMs = now;
+    victim.transcript = [];
+    victim.logicalMessages.clear();
+    this.enforceTombstoneBounds();
+  }
+
+  private enforceTombstoneBounds(): void {
+    const tombstones = [...this.sessions.values()]
+      .filter((session) => session.tombstoneReason)
+      .sort(
+        (a, b) =>
+          (a.tombstonedAtMs ?? 0) - (b.tombstonedAtMs ?? 0) ||
+          a.createdAtMs - b.createdAtMs ||
+          a.id.localeCompare(b.id)
+      );
+    let retainedBytes = tombstones.reduce((total, session) => total + this.tombstoneBytes(session), 0);
+    while (tombstones.length > MAX_RETAINED_TOMBSTONES || retainedBytes > MAX_RETAINED_TOMBSTONE_BYTES) {
+      const victim = tombstones.shift();
+      if (!victim) break;
+      retainedBytes -= this.tombstoneBytes(victim);
+      this.sessions.delete(victim.id);
+    }
+  }
+
+  private tombstoneBytes(session: ChatSession): number {
+    return Buffer.byteLength(
+      JSON.stringify({
+        id: session.id,
+        userId: session.userId,
+        agentId: session.agentId,
+        executions: [...session.executions.values()]
+      }),
+      "utf8"
+    );
   }
 
   private rejection(status: number, code: string, message: string, clientMessageId: string | null) {
@@ -460,8 +526,8 @@ export class ChatSessionService {
     return this.runtime.now(testNamespace);
   }
 
-  private startTimeout(testNamespace: string | undefined, milliseconds: number) {
-    if (this.runtime.timeout) return this.runtime.timeout(testNamespace, milliseconds);
+  private startTimeout(testNamespace: string | undefined, milliseconds: number, generation?: number) {
+    if (this.runtime.timeout) return this.runtime.timeout(testNamespace, milliseconds, generation);
     let timer: NodeJS.Timeout;
     const promise = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, milliseconds);
@@ -473,6 +539,20 @@ export class ChatSessionService {
   private iso(milliseconds: number): string {
     return new Date(milliseconds).toISOString();
   }
+
+  private observeExecution(session: ChatSession, execution: StoredExecution, resultCode: string): void {
+    this.runtime.observe?.(
+      session.testNamespace,
+      {
+        requestId: execution.requestId,
+        executionId: execution.executionId,
+        stage: "execution",
+        snapshotVersion: execution.snapshotVersion ?? null,
+        resultCode
+      },
+      session.testGeneration
+    );
+  }
 }
 
 export function createChatRuntime(testControl: ChatTestControlService): ChatRuntime {
@@ -480,11 +560,20 @@ export function createChatRuntime(testControl: ChatTestControlService): ChatRunt
     now: (namespace) => testControl.now(namespace),
     generation: (namespace) => testControl.generation(namespace),
     randomId: (prefix) => `${prefix}_${randomUUID()}`,
-    increment: (namespace, counter) => testControl.increment(namespace, counter),
-    checkpoint: (namespace, key) => testControl.checkpoint(namespace, key),
-    timeout: (namespace, milliseconds) => {
+    increment: (namespace, counter, generation) => testControl.increment(namespace, counter, generation),
+    checkpoint: (namespace, key, generation) => testControl.checkpoint(namespace, key, generation),
+    observe: (namespace, observation, generation) => testControl.observe(namespace, observation, generation),
+    assertGeneration: (namespace, generation) => {
+      if (namespace) testControl.now(namespace, generation);
+    },
+    registerResetHandler: (handler) => testControl.registerResetHandler(handler),
+    timeout: (namespace, milliseconds, generation) => {
       if (namespace) {
-        return testControl.waitForClock(namespace, testControl.now(namespace) + milliseconds);
+        return testControl.waitForClock(
+          namespace,
+          testControl.now(namespace, generation) + milliseconds,
+          generation
+        );
       }
       let timer: NodeJS.Timeout;
       const promise = new Promise<void>((resolve) => {

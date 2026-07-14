@@ -9,6 +9,7 @@ import { ChatConfigSourceService } from "./chat-config-source.service";
 import { ChatController } from "./chat.controller";
 import { CHAT_RUNTIME, ChatSessionService, createChatRuntime } from "./chat-session.service";
 import { MASTRA_CHAT_ADAPTER } from "./mastra-chat.adapter";
+import { MastraChatRuntimeExecutor } from "./mastra-chat-runtime.executor";
 import { OpenAICompatibleMastraChatAdapter } from "./openai-compatible-mastra-chat.adapter";
 
 @Module({
@@ -27,6 +28,7 @@ import { OpenAICompatibleMastraChatAdapter } from "./openai-compatible-mastra-ch
     },
     ChatConfigSourceService,
     ChatConfigSnapshotService,
+    MastraChatRuntimeExecutor,
     OpenAICompatibleMastraChatAdapter,
     {
       provide: MASTRA_CHAT_ADAPTER,

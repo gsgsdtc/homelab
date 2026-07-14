@@ -95,4 +95,29 @@ describe("F5 chat test control", () => {
     await waiter.promise;
     expect(settled).toBe(true);
   });
+
+  it("rejects every old-generation continuation after an atomic reset", async () => {
+    const service = new controlModule.ChatTestControlService({ enabled: true });
+    const namespace = service.createNamespace();
+    const generation = service.generation(namespace.id);
+    service.enableBarrier(namespace.id, "beforeExecute");
+    const checkpoint = service.checkpoint(namespace.id, "beforeExecute", generation);
+    await Promise.resolve();
+
+    const reset = service.reset(namespace.id);
+
+    await expect(checkpoint).rejects.toMatchObject({
+      chatFailure: expect.objectContaining({ code: "TEST_NAMESPACE_RESET", retryable: false })
+    });
+    expect(() => service.increment(namespace.id, "modelCalls", generation)).toThrow(
+      expect.objectContaining({ chatFailure: expect.objectContaining({ code: "TEST_NAMESPACE_RESET" }) })
+    );
+    expect(() => service.observe(namespace.id, { stage: "old" }, generation)).toThrow(
+      expect.objectContaining({ chatFailure: expect.objectContaining({ code: "TEST_NAMESPACE_RESET" }) })
+    );
+    expect(reset).toEqual(expect.objectContaining({ generation: generation + 1 }));
+    expect(service.getNamespace(namespace.id)).toEqual(
+      expect.objectContaining({ counters: expect.objectContaining({ modelCalls: 0 }), observations: [] })
+    );
+  });
 });
