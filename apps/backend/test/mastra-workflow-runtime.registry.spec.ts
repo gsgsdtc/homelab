@@ -193,6 +193,10 @@ describe("DynamicImportMastraWorkflowRuntimeRegistry", () => {
     [
       "aliased handler invocation",
       'const ordinaryHandler = () => { globalThis.__chatWorkflowSideEffects += 1; };\nordinaryHandler();'
+    ],
+    [
+      "tagged template handler invocation",
+      'const ordinaryTag = () => { globalThis.__chatWorkflowSideEffects += 1; return ""; };\nordinaryTag`payload`;'
     ]
   ])("rejects a %s before loading the default chat module", async (_name, sideEffectSource) => {
     (globalThis as any).__chatWorkflowSideEffects = 0;

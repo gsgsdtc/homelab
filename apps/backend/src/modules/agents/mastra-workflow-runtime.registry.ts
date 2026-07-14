@@ -359,7 +359,8 @@ export class DynamicImportMastraWorkflowRuntimeRegistry implements MastraWorkflo
             (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) ||
           ts.isPostfixUnaryExpression(node) ||
           ts.isAwaitExpression(node) ||
-          ts.isNewExpression(node)
+          ts.isNewExpression(node) ||
+          ts.isTaggedTemplateExpression(node)
         ) {
           throw new Error("Top-level side effects are not allowed in P0 chat workflows");
         }
