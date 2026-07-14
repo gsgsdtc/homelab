@@ -118,6 +118,9 @@ CREATE INDEX "AgentSkillInstallation_sourceId_idx" ON "AgentSkillInstallation"("
 CREATE INDEX "AgentSkillChange_targetAgentId_changeStatus_idx" ON "AgentSkillChange"("targetAgentId", "changeStatus");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "AgentSkillChange_one_active_per_agent_key" ON "AgentSkillChange"("targetAgentId") WHERE "changeStatus" IN ('pending', 'validating', 'applying', 'reloading', 'rollback_failed');
+
+-- CreateIndex
 CREATE INDEX "AgentSkillChange_targetAgentId_createdAt_idx" ON "AgentSkillChange"("targetAgentId", "createdAt");
 
 -- CreateIndex

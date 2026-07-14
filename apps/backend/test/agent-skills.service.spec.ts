@@ -23,6 +23,7 @@ describe("AgentSkillsService", () => {
     agentSkillInstallation: {
       findMany: jest.fn(),
       findUnique: jest.fn(),
+      delete: jest.fn(),
       upsert: jest.fn(),
       update: jest.fn()
     },
@@ -63,6 +64,7 @@ describe("AgentSkillsService", () => {
     prisma.agentSkillInstallation.findMany.mockResolvedValue([]);
     prisma.agentSkillInstallation.findUnique.mockResolvedValue(null);
     prisma.agentSkillSelfUpdatePolicy.findFirst.mockResolvedValue(null);
+    prisma.agentSkillChange.findUnique.mockResolvedValue(null);
     prisma.agentSkillChange.create.mockImplementation(async ({ data }: any) => ({
       id: "change-1",
       targetAgentId: data.targetAgentId,
@@ -111,6 +113,7 @@ describe("AgentSkillsService", () => {
     }));
     prisma.agentSkillInstallation.upsert.mockResolvedValue({});
     prisma.agentSkillInstallation.update.mockResolvedValue({});
+    prisma.agentSkillInstallation.delete.mockResolvedValue({});
     prisma.$transaction.mockImplementation(async (fn: any) => fn(prisma));
     validator.validate.mockResolvedValue({ resolvedVersion: "1.3.0", manifest: { name: "skill-a" } });
     workspaces.stageSkillsConfig.mockResolvedValue({
@@ -163,8 +166,8 @@ describe("AgentSkillsService", () => {
     });
   });
 
-  it("rejects a second change while one is in progress", async () => {
-    prisma.agentSkillChange.findFirst.mockResolvedValueOnce({ id: "change-busy" });
+  it("treats an atomic active-change create conflict as concurrency_lock", async () => {
+    prisma.agentSkillChange.create.mockRejectedValueOnce({ code: "P2002" });
     const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
 
     const result = await service.installAdmin("agent-123", {
@@ -177,10 +180,13 @@ describe("AgentSkillsService", () => {
     expect(result).toMatchObject({
       changeStatus: "failed",
       failedStage: "concurrency_lock",
-      errorCode: "AGENT_SKILL_CHANGE_IN_PROGRESS",
-      reloadStatus: "unknown",
-      rollbackResult: "skipped"
+      errorCode: "AGENT_SKILL_CHANGE_IN_PROGRESS"
     });
+    expect(prisma.agentSkillChange.findFirst).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ changeStatus: expect.anything() })
+      })
+    );
     expect(workspaces.stageSkillsConfig).not.toHaveBeenCalled();
   });
 
@@ -208,6 +214,111 @@ describe("AgentSkillsService", () => {
     });
     expect(result.safeErrorSummary).not.toContain("ghp_secret");
     expect(result.safeErrorSummary).not.toContain("/repo/private/path");
+  });
+
+  it("removes the just-installed DB installation when install reload fails", async () => {
+    reloadClient.reloadSkills.mockRejectedValueOnce(new Error("reload failed"));
+    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+
+    await service.installAdmin("agent-123", {
+      skillName: "skill-a",
+      sourceId: "source-1",
+      sourceType: "registry",
+      version: "1.3.0"
+    }, "admin-1");
+
+    expect(prisma.agentSkillInstallation.delete).toHaveBeenCalledWith({
+      where: { agentId_skillName: { agentId: "agent-123", skillName: "skill-a" } }
+    });
+  });
+
+  it("restores the previous DB installation when update reload fails", async () => {
+    prisma.agentSkillInstallation.findUnique.mockResolvedValueOnce({
+      agentId: "agent-123",
+      skillName: "skill-a",
+      sourceType: "registry",
+      sourceId: "source-1",
+      version: "1.2.0",
+      configVersion: "config-old",
+      enabled: true,
+      systemRequired: false,
+      selfUpdateAllowed: false
+    });
+    prisma.agentSkillInstallation.findMany.mockResolvedValueOnce([
+      {
+        agentId: "agent-123",
+        skillName: "skill-a",
+        sourceType: "registry",
+        sourceId: "source-1",
+        version: "1.2.0",
+        configVersion: "config-old",
+        enabled: true,
+        systemRequired: false,
+        selfUpdateAllowed: false
+      }
+    ]);
+    reloadClient.reloadSkills.mockRejectedValueOnce(new Error("reload failed"));
+    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+
+    await service.updateAdmin("agent-123", {
+      skillName: "skill-a",
+      sourceId: "source-1",
+      sourceType: "registry",
+      version: "1.3.0"
+    }, "admin-1");
+
+    expect(prisma.agentSkillInstallation.update).toHaveBeenCalledWith({
+      where: { agentId_skillName: { agentId: "agent-123", skillName: "skill-a" } },
+      data: expect.objectContaining({
+        sourceType: "registry",
+        sourceId: "source-1",
+        version: "1.2.0",
+        configVersion: "config-old",
+        enabled: true
+      })
+    });
+  });
+
+  it("re-enables the previous DB installation when remove reload fails", async () => {
+    prisma.agentSkillInstallation.findUnique.mockResolvedValueOnce({
+      agentId: "agent-123",
+      skillName: "skill-a",
+      sourceType: "registry",
+      sourceId: "source-1",
+      version: "1.2.0",
+      configVersion: "config-old",
+      enabled: true,
+      systemRequired: false,
+      selfUpdateAllowed: false
+    });
+    prisma.agentSkillInstallation.findMany.mockResolvedValueOnce([
+      {
+        agentId: "agent-123",
+        skillName: "skill-a",
+        sourceType: "registry",
+        sourceId: "source-1",
+        version: "1.2.0",
+        configVersion: "config-old",
+        enabled: true,
+        systemRequired: false,
+        selfUpdateAllowed: false
+      }
+    ]);
+    reloadClient.reloadSkills.mockRejectedValueOnce(new Error("reload failed"));
+    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+
+    await service.removeAdmin("agent-123", { skillName: "skill-a" }, "admin-1");
+
+    expect(prisma.agentSkillInstallation.update).toHaveBeenCalledWith({
+      where: { agentId_skillName: { agentId: "agent-123", skillName: "skill-a" } },
+      data: expect.objectContaining({
+        sourceType: "registry",
+        sourceId: "source-1",
+        version: "1.2.0",
+        configVersion: "config-old",
+        enabled: true
+      })
+    });
   });
 
   it("rejects agent self-update by default", async () => {
