@@ -1,4 +1,4 @@
-import { IsOptional, IsString, Matches, MaxLength, MinLength } from "class-validator";
+import { IsOptional, IsString, Matches, MaxLength, MinLength, ValidateIf } from "class-validator";
 
 export class CreateAgentDto {
   @IsString()
@@ -16,6 +16,11 @@ export class CreateAgentDto {
   @IsString()
   @MaxLength(80)
   modelProvider?: string;
+
+  @ValidateIf((_object, value) => value !== undefined && value !== null)
+  @IsString()
+  @MaxLength(128)
+  modelProviderId?: string | null;
 
   @IsOptional()
   @IsString()

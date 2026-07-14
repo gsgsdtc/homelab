@@ -16,16 +16,43 @@ export interface MastraWorkflowRuntimeReloadRequest {
 
 export interface MastraWorkflowRuntimeRegistry {
   reloadWorkflow(request: MastraWorkflowRuntimeReloadRequest): Promise<ReloadWorkflowResult>;
+  getWorkflow(agentId: string, workflowKey: string, sourceHash?: string): unknown;
+  loadWorkflowVersion(request: MastraWorkflowRuntimeVersionRequest): Promise<MastraWorkflowRuntimeLoadResult>;
+}
+
+export interface MastraWorkflowRuntimeLoadResult {
+  executable: unknown;
+}
+
+export interface MastraWorkflowRuntimeVersionRequest {
+  agentId: string;
+  workflowKey: string;
+  sourceHash: string;
+  source: string;
+  extension: "ts" | "js";
 }
 
 export const MASTRA_WORKFLOW_RUNTIME_REGISTRY = Symbol("MASTRA_WORKFLOW_RUNTIME_REGISTRY");
 type ModuleWithLoad = typeof Module & {
   _load(request: string, parent: NodeJS.Module | null, isMain: boolean): unknown;
 };
+const MODEL_ONLY_WORKFLOW_BUILDER_METHODS = new Set([
+  "then",
+  "branch",
+  "parallel",
+  "map",
+  "foreach",
+  "dountil",
+  "dowhile",
+  "sleep",
+  "sleepUntil",
+  "commit"
+]);
 
 @Injectable()
 export class DynamicImportMastraWorkflowRuntimeRegistry implements MastraWorkflowRuntimeRegistry {
   private readonly workflows = new Map<string, unknown>();
+  private readonly workflowVersions = new Map<string, unknown>();
   private readonly requireModule = createRequire(__filename);
 
   async reloadWorkflow(request: MastraWorkflowRuntimeReloadRequest): Promise<ReloadWorkflowResult> {
@@ -41,6 +68,7 @@ export class DynamicImportMastraWorkflowRuntimeRegistry implements MastraWorkflo
         };
       }
       this.workflows.set(this.key(request.agentId, request.workflowKey), workflow);
+      this.workflowVersions.set(this.versionKey(request.agentId, request.workflowKey, request.sourceHash), workflow);
       return {
         status: "succeeded",
         loadedAt: new Date()
@@ -53,12 +81,40 @@ export class DynamicImportMastraWorkflowRuntimeRegistry implements MastraWorkflo
     }
   }
 
-  getWorkflow(agentId: string, workflowKey: string): unknown {
+  getWorkflow(agentId: string, workflowKey: string, sourceHash?: string): unknown {
+    if (sourceHash) return this.workflowVersions.get(this.versionKey(agentId, workflowKey, sourceHash));
     return this.workflows.get(this.key(agentId, workflowKey));
+  }
+
+  async loadWorkflowVersion(request: MastraWorkflowRuntimeVersionRequest): Promise<MastraWorkflowRuntimeLoadResult> {
+    const existing = this.getWorkflow(request.agentId, request.workflowKey, request.sourceHash);
+    if (existing) return { executable: existing };
+    const cacheRoot = this.compiledWorkflowRoot(request);
+    await mkdir(cacheRoot, { recursive: true });
+    const sourcePath = join(cacheRoot, `immutable-source.${request.extension}`);
+    await writeFile(sourcePath, request.source, "utf8");
+    const importPath = await this.transpileWorkflowToCommonJs({
+      ...request,
+      relativePath: sourcePath,
+      sourcePath
+    });
+    delete this.requireModule.cache[this.requireModule.resolve(importPath)];
+    const workflowModule = (Module as ModuleWithLoad)._load(importPath, module, false) as Record<string, unknown>;
+    const workflow = this.defaultExportFromModule(workflowModule);
+    if (!workflow) throw new Error("Mastra workflow module must default export a workflow");
+    this.workflowVersions.set(this.versionKey(request.agentId, request.workflowKey, request.sourceHash), workflow);
+    // Mastra workflows intentionally expose a `.then()` builder. Returning one
+    // directly from an async function makes the Promise resolution procedure
+    // assimilate it as a thenable and leaves cold loads permanently pending.
+    return { executable: workflow };
   }
 
   private key(agentId: string, workflowKey: string): string {
     return `${agentId}:${workflowKey}`;
+  }
+
+  private versionKey(agentId: string, workflowKey: string, sourceHash: string): string {
+    return `${this.key(agentId, workflowKey)}:${sourceHash}`;
   }
 
   private defaultExportFromModule(workflowModule: Record<string, unknown>): unknown {
@@ -80,10 +136,22 @@ export class DynamicImportMastraWorkflowRuntimeRegistry implements MastraWorkflo
     const compiledPaths = new Map<string, string>();
     await mkdir(cacheRoot, { recursive: true });
     await writeFile(join(cacheRoot, "package.json"), '{"type":"commonjs"}\n', "utf8");
-    return this.transpileSourceFile(request.sourcePath, entryDir, cacheRoot, compiledPaths);
+    return this.transpileSourceFile(
+      request.sourcePath,
+      entryDir,
+      cacheRoot,
+      compiledPaths,
+      request.workflowKey === "default"
+    );
   }
 
-  private async transpileSourceFile(sourcePath: string, entryDir: string, cacheRoot: string, compiledPaths: Map<string, string>): Promise<string> {
+  private async transpileSourceFile(
+    sourcePath: string,
+    entryDir: string,
+    cacheRoot: string,
+    compiledPaths: Map<string, string>,
+    modelOnly: boolean
+  ): Promise<string> {
     if (compiledPaths.has(sourcePath)) {
       return compiledPaths.get(sourcePath)!;
     }
@@ -91,13 +159,20 @@ export class DynamicImportMastraWorkflowRuntimeRegistry implements MastraWorkflo
       throw new Error("workflow local import escapes the controlled workflow source directory");
     }
     const source = await readFile(sourcePath, "utf8");
+    if (modelOnly) this.assertModelOnlyBeforeModuleLoad(source, sourcePath);
     const cachePath = this.compiledSourcePath(sourcePath, entryDir, cacheRoot);
     compiledPaths.set(sourcePath, cachePath);
     const localRequireSpecifiers = new Map<string, string>();
     const localImports = this.collectLocalImportSpecifiers(source);
     for (const moduleName of localImports) {
       const dependencySourcePath = await this.resolveLocalImport(sourcePath, moduleName);
-      const dependencyCachePath = await this.transpileSourceFile(dependencySourcePath, entryDir, cacheRoot, compiledPaths);
+      const dependencyCachePath = await this.transpileSourceFile(
+        dependencySourcePath,
+        entryDir,
+        cacheRoot,
+        compiledPaths,
+        modelOnly
+      );
       localRequireSpecifiers.set(moduleName, this.relativeRequireSpecifier(cachePath, dependencyCachePath));
     }
     const output = ts.transpileModule(source, {
@@ -119,7 +194,7 @@ export class DynamicImportMastraWorkflowRuntimeRegistry implements MastraWorkflo
     return cachePath;
   }
 
-  private compiledWorkflowRoot(request: MastraWorkflowRuntimeReloadRequest): string {
+  private compiledWorkflowRoot(request: Pick<MastraWorkflowRuntimeReloadRequest, "agentId" | "workflowKey" | "sourceHash">): string {
     const safeAgentId = this.safeCacheSegment(request.agentId);
     const safeWorkflowKey = this.safeCacheSegment(request.workflowKey);
     const safeHash = this.safeCacheSegment(request.sourceHash);
@@ -214,5 +289,150 @@ export class DynamicImportMastraWorkflowRuntimeRegistry implements MastraWorkflo
   private isPathInside(filePath: string, rootPath: string): boolean {
     const relativePath = relative(rootPath, filePath);
     return relativePath === "" || (!relativePath.startsWith("..") && !relativePath.startsWith("/") && relativePath !== "..");
+  }
+
+  private assertModelOnlyBeforeModuleLoad(source: string, sourcePath: string): void {
+    const sourceFile = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
+    const definitionFactories = new Set<string>();
+    const workflowFactories = new Set<string>();
+    const zodBindings = new Set<string>();
+    const workflowVariables = new Set<string>();
+
+    for (const statement of sourceFile.statements) {
+      if (ts.isImportEqualsDeclaration(statement)) {
+        throw new Error("Tools are not allowed in P0 chat");
+      }
+      if (
+        (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) &&
+        statement.moduleSpecifier &&
+        ts.isStringLiteral(statement.moduleSpecifier)
+      ) {
+        const moduleName = statement.moduleSpecifier.text;
+        if (moduleName !== "@mastra/core/workflows" && moduleName !== "zod") {
+          throw new Error("Tools are not allowed in P0 chat");
+        }
+      }
+      if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+        const moduleName = statement.moduleSpecifier.text;
+        if (moduleName === "zod" && statement.importClause?.name) {
+          zodBindings.add(statement.importClause.name.text);
+        }
+        const bindings = statement.importClause?.namedBindings;
+        if (bindings && ts.isNamedImports(bindings)) {
+          for (const binding of bindings.elements) {
+            const importedName = binding.propertyName?.text ?? binding.name.text;
+            if (moduleName === "@mastra/core/workflows" && importedName === "createWorkflow") {
+              workflowFactories.add(binding.name.text);
+            }
+            if (moduleName === "@mastra/core/workflows" && (importedName === "createWorkflow" || importedName === "createStep")) {
+              definitionFactories.add(binding.name.text);
+            }
+            if (moduleName === "zod") zodBindings.add(binding.name.text);
+          }
+        }
+        if (moduleName === "zod" && bindings && ts.isNamespaceImport(bindings)) {
+          zodBindings.add(bindings.name.text);
+        }
+      }
+    }
+
+    for (const statement of sourceFile.statements) {
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (
+            ts.isIdentifier(declaration.name) &&
+            declaration.initializer &&
+            this.isWorkflowExpression(declaration.initializer, workflowFactories, workflowVariables)
+          ) {
+            workflowVariables.add(declaration.name.text);
+          }
+        }
+      }
+    }
+
+    const visit = (node: ts.Node, insideFunction: boolean) => {
+      const nextInsideFunction = insideFunction || ts.isFunctionLike(node);
+      if (!insideFunction) {
+        if (
+          (ts.isBinaryExpression(node) && this.isAssignmentOperator(node.operatorToken.kind)) ||
+          ts.isPrefixUnaryExpression(node) &&
+            (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) ||
+          ts.isPostfixUnaryExpression(node) ||
+          ts.isAwaitExpression(node) ||
+          ts.isNewExpression(node) ||
+          ts.isTaggedTemplateExpression(node)
+        ) {
+          throw new Error("Top-level side effects are not allowed in P0 chat workflows");
+        }
+        if (
+          ts.isCallExpression(node) &&
+          !this.isAllowedModelOnlyDefinitionCall(
+            node,
+            definitionFactories,
+            workflowFactories,
+            workflowVariables,
+            zodBindings
+          )
+        ) {
+          throw new Error("Top-level handlers are not allowed in P0 chat workflows");
+        }
+        if (
+          ts.isIdentifier(node) &&
+          (node.text === "globalThis" || node.text === "global" || node.text === "process" || node.text === "require" || node.text === "eval")
+        ) {
+          throw new Error("Global runtime access is not allowed in P0 chat workflows");
+        }
+      }
+      ts.forEachChild(node, (child) => visit(child, nextInsideFunction));
+    };
+    visit(sourceFile, false);
+  }
+
+  private isWorkflowExpression(
+    expression: ts.Expression,
+    workflowFactories: Set<string>,
+    workflowVariables: Set<string>
+  ): boolean {
+    if (ts.isParenthesizedExpression(expression)) {
+      return this.isWorkflowExpression(expression.expression, workflowFactories, workflowVariables);
+    }
+    if (ts.isIdentifier(expression)) return workflowVariables.has(expression.text);
+    if (!ts.isCallExpression(expression)) return false;
+    if (ts.isIdentifier(expression.expression)) return workflowFactories.has(expression.expression.text);
+    return (
+      ts.isPropertyAccessExpression(expression.expression) &&
+      MODEL_ONLY_WORKFLOW_BUILDER_METHODS.has(expression.expression.name.text) &&
+      this.isWorkflowExpression(expression.expression.expression, workflowFactories, workflowVariables)
+    );
+  }
+
+  private isAllowedModelOnlyDefinitionCall(
+    call: ts.CallExpression,
+    definitionFactories: Set<string>,
+    workflowFactories: Set<string>,
+    workflowVariables: Set<string>,
+    zodBindings: Set<string>
+  ): boolean {
+    if (ts.isIdentifier(call.expression)) return definitionFactories.has(call.expression.text);
+    if (!ts.isPropertyAccessExpression(call.expression)) return false;
+    const receiver = call.expression.expression;
+    const root = this.leftmostIdentifier(receiver);
+    if (root && zodBindings.has(root)) return true;
+    return (
+      MODEL_ONLY_WORKFLOW_BUILDER_METHODS.has(call.expression.name.text) &&
+      this.isWorkflowExpression(receiver, workflowFactories, workflowVariables)
+    );
+  }
+
+  private leftmostIdentifier(expression: ts.Expression): string | null {
+    let current = expression;
+    while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      current = current.expression;
+    }
+    return ts.isIdentifier(current) ? current.text : null;
+  }
+
+  private isAssignmentOperator(kind: ts.SyntaxKind): boolean {
+    return kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment;
   }
 }

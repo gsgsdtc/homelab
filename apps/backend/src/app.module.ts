@@ -8,6 +8,8 @@ import { HealthModule } from "./modules/health/health.module";
 import { ModelProvidersModule } from "./modules/model-providers/model-providers.module";
 import { PrismaModule } from "./modules/prisma/prisma.module";
 import { UsersModule } from "./modules/users/users.module";
+import { ChatModule } from "./modules/chat/chat.module";
+import { ChatTestControlModule } from "./modules/chat-test-control/chat-test-control.module";
 
 @Module({
   imports: [
@@ -22,6 +24,11 @@ import { UsersModule } from "./modules/users/users.module";
     AppKeysModule,
     AgentsModule,
     ModelProvidersModule,
+    ChatModule,
+    ChatTestControlModule.register({
+      nodeEnv: process.env.NODE_ENV,
+      enabled: process.env.CHAT_TEST_CONTROL_ENABLED === "true",
+    }),
   ],
 })
 export class AppModule {}
