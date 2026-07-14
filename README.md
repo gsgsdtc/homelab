@@ -148,9 +148,11 @@ Target paths:
 - Logs: `/home/gsg/workspace/project/homelab/deploy/logs`
 - Result: `/home/gsg/workspace/project/homelab/deploy/deploy-result.json`
 
-Build commands run by the deploy script:
+The deploy script installs dependencies, applies pending production migrations,
+then builds the applications:
 
 - `CI=true NODE_ENV=development pnpm install --frozen-lockfile`
+- `pnpm --filter @homelab/backend exec prisma migrate deploy --schema prisma/schema.prisma`
 - `pnpm --filter @homelab/backend build`
 - `pnpm --filter @homelab/admin build`
 - `pnpm --filter @homelab/portal build`

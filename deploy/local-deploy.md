@@ -71,10 +71,12 @@ HOMELAB_CURL_INSECURE=1 ./deploy.sh
 
 ## Build and restart flow
 
-The deploy script runs these build commands from the synced source directory:
+The deploy script installs dependencies, applies pending production migrations,
+then builds the applications from the synced source directory:
 
 ```bash
 CI=true NODE_ENV=development pnpm install --frozen-lockfile
+pnpm --filter @homelab/backend exec prisma migrate deploy --schema prisma/schema.prisma
 pnpm --filter @homelab/backend build
 ADMIN_BACKEND_URL=http://127.0.0.1:3005 \
   NEXT_PUBLIC_ADMIN_API_BASE_URL=/api/backend \
@@ -125,6 +127,8 @@ backend service after deploy.
 - Placeholder `DATABASE_URL`, `JWT_SECRET`, or `MODEL_PROVIDER_ENCRYPTION_KEY`
   values containing `change-me` fail
   the deployment.
+- Pending Prisma migrations are applied with `prisma migrate deploy` before any
+  application build or service restart; migration failure stops the deployment.
 - Existing `homelab-backend`, `homelab-admin`, and `homelab-portal` Docker
   containers are stopped and removed before the direct systemd services start.
 - nginx registration updates the existing
