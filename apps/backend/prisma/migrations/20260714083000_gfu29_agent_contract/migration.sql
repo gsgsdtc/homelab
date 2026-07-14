@@ -3,7 +3,58 @@
 BEGIN;
 
 DO $$
+DECLARE
+  incompatible_existing_reference BOOLEAN := FALSE;
 BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'Agent'
+      AND column_name = 'modelProviderId'
+      AND (data_type <> 'text' OR is_nullable <> 'YES')
+  ) THEN
+    RAISE EXCEPTION 'GFU-29 provider preflight failed: existing modelProviderId has an incompatible shape';
+  END IF;
+
+  -- GFU-27 may already have added modelProviderId. Validate its contents with
+  -- dynamic SQL so this preflight remains valid on older schemas where the
+  -- column is not present yet. No existing value is overwritten or inferred.
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'Agent'
+      AND column_name = 'modelProviderId'
+  ) THEN
+    EXECUTE $query$
+      WITH resolved AS (
+        SELECT agent."id",
+               agent."modelProviderId" AS primary_id,
+               COALESCE(id_provider."id", name_provider."id") AS legacy_id,
+               primary_provider."isActive" AS primary_active
+        FROM "Agent" AS agent
+        LEFT JOIN "ModelProvider" AS id_provider
+          ON id_provider."id" = BTRIM(agent."modelProvider")
+        LEFT JOIN "ModelProvider" AS name_provider
+          ON id_provider."id" IS NULL
+         AND name_provider."nameKey" = LOWER(BTRIM(agent."modelProvider"))
+        LEFT JOIN "ModelProvider" AS primary_provider
+          ON primary_provider."id" = agent."modelProviderId"
+      )
+      SELECT EXISTS (
+        SELECT 1 FROM resolved
+        WHERE primary_id IS NOT NULL
+          AND (primary_active IS NOT TRUE
+            OR (legacy_id IS NOT NULL AND primary_id IS DISTINCT FROM legacy_id))
+      )
+    $query$ INTO incompatible_existing_reference;
+
+    IF incompatible_existing_reference THEN
+      RAISE EXCEPTION 'GFU-29 provider preflight failed: existing modelProviderId is unresolved, disabled, or conflicts with legacy Provider';
+    END IF;
+  END IF;
+
   IF EXISTS (
     WITH mapping AS (
       SELECT agent."id",
@@ -39,13 +90,13 @@ END $$;
 -- The legacy column remains available for application rollback during the
 -- compatibility window. All following DDL/backfill/validate is one transaction.
 ALTER TABLE "Agent"
-  ADD COLUMN "modelProviderId" TEXT,
-  ADD COLUMN "revision" INTEGER NOT NULL DEFAULT 1,
-  ADD COLUMN "soulRevision" INTEGER NOT NULL DEFAULT 1;
+  ADD COLUMN IF NOT EXISTS "modelProviderId" TEXT,
+  ADD COLUMN IF NOT EXISTS "revision" INTEGER NOT NULL DEFAULT 1,
+  ADD COLUMN IF NOT EXISTS "soulRevision" INTEGER NOT NULL DEFAULT 1;
 
-ALTER TABLE "AgentWorkflow" ADD COLUMN "editRevision" INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE "AgentWorkflow" ADD COLUMN IF NOT EXISTS "editRevision" INTEGER NOT NULL DEFAULT 1;
 
-CREATE INDEX "Agent_modelProviderId_idx" ON "Agent"("modelProviderId");
+CREATE INDEX IF NOT EXISTS "Agent_modelProviderId_idx" ON "Agent"("modelProviderId");
 
 -- Backfill explicit legacy values by Provider ID first. Disabled IDs already
 -- failed preflight and are never eligible for a nameKey fallback.
@@ -53,6 +104,7 @@ UPDATE "Agent" AS agent
 SET "modelProviderId" = provider."id"
 FROM "ModelProvider" AS provider
 WHERE NULLIF(BTRIM(agent."modelProvider"), '') IS NOT NULL
+  AND agent."modelProviderId" IS NULL
   AND provider."id" = BTRIM(agent."modelProvider");
 
 -- Only values not matched by ID may use the unique normalized Provider name.
@@ -86,10 +138,19 @@ BEGIN
   END IF;
 END $$;
 
-ALTER TABLE "Agent"
-  ADD CONSTRAINT "Agent_modelProviderId_fkey"
-  FOREIGN KEY ("modelProviderId") REFERENCES "ModelProvider"("id")
-  ON DELETE RESTRICT ON UPDATE CASCADE;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = '"Agent"'::regclass
+      AND conname = 'Agent_modelProviderId_fkey'
+  ) THEN
+    ALTER TABLE "Agent"
+      ADD CONSTRAINT "Agent_modelProviderId_fkey"
+      FOREIGN KEY ("modelProviderId") REFERENCES "ModelProvider"("id")
+      ON DELETE RESTRICT ON UPDATE CASCADE;
+  END IF;
+END $$;
 
 CREATE TABLE "AgentCreateRequest" (
   "key" TEXT NOT NULL,
