@@ -176,6 +176,49 @@ describe("AgentWorkspaceService", () => {
     );
   });
 
+  it("reads immutable skill bundles by config version and rejects missing or corrupt bundles", async () => {
+    const descriptor = service.buildDescriptor("ops-agent", "12345678-abcd");
+    const agent = {
+      id: "12345678-abcd",
+      name: "Ops Agent",
+      slug: "ops-agent",
+      workspaceName: descriptor.workspaceName,
+      workspacePath: descriptor.relativeWorkspacePath,
+      modelProvider: null,
+      modelSecretRef: null,
+      soul: ""
+    };
+    await service.initializeWorkspace(agent, { allowExistingWorkspace: false });
+    const staged = await service.stageSkillsConfig(agent, {
+      changeId: "change-chat",
+      operation: "install",
+      skillName: "chat-skill",
+      sourceType: "registry",
+      sourceId: "builtin-registry",
+      version: "1.0.0",
+      resolvedVersion: "1.0.0",
+      currentSkills: []
+    });
+    await service.commitSkillsConfig(agent, "change-chat", staged.stagedConfigVersion);
+
+    await expect(service.readSkillsConfigVersion(agent, staged.stagedConfigVersion)).resolves.toEqual([
+      expect.objectContaining({ name: "chat-skill", version: "1.0.0", sourceId: "builtin-registry" })
+    ]);
+
+    const versionPath = join(
+      descriptor.workspacePath,
+      ".skills-state",
+      "versions",
+      staged.stagedConfigVersion,
+      "skills.yaml"
+    );
+    await writeFile(versionPath, "skills: []\n", "utf8");
+    await expect(service.readSkillsConfigVersion(agent, staged.stagedConfigVersion)).rejects.toThrow(
+      "skill config version integrity check failed"
+    );
+    await expect(service.readSkillsConfigVersion(agent, "cfg_0000000000000000")).rejects.toThrow();
+  });
+
   it("rejects an existing unbound workspace path during first initialization", async () => {
     const descriptor = service.buildDescriptor("ops-agent", "12345678-abcd");
     await service.initializeWorkspace(

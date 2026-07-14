@@ -58,6 +58,7 @@ export class AgentsService {
         status: AgentStatus.initializing,
         workspaceName: descriptor.workspaceName,
         workspacePath: descriptor.relativeWorkspacePath,
+        modelProviderId: dto.modelProviderId,
         modelProvider: dto.modelProvider,
         modelSecretRef: dto.modelSecretRef,
         soul
@@ -76,6 +77,7 @@ export class AgentsService {
       where: { id },
       data: {
         name: dto.name,
+        modelProviderId: dto.modelProviderId,
         modelProvider: dto.modelProvider,
         modelSecretRef: dto.modelSecretRef,
         soul
@@ -215,6 +217,7 @@ export class AgentsService {
       ["name", "name" in dto ? dto.name : undefined],
       ["slug", "slug" in dto ? dto.slug : undefined],
       ["modelProvider", "modelProvider" in dto ? dto.modelProvider : undefined],
+      ["modelProviderId", "modelProviderId" in dto ? (dto.modelProviderId ?? undefined) : undefined],
       ["modelSecretRef", "modelSecretRef" in dto ? dto.modelSecretRef : undefined],
       ["soul", dto.soul]
     ];

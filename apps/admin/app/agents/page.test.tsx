@@ -282,6 +282,23 @@ describe("AgentsPage", () => {
     expect(await screen.findByText("可用")).toBeInTheDocument();
   });
 
+  it("links a ready Agent to its direct chat route", async () => {
+    mockAdmin();
+    mockAgentList();
+    mockLoadedAgent();
+
+    await renderLoadedPage();
+
+    expect(screen.getByRole("link", { name: "开始聊天" })).toHaveAttribute(
+      "href",
+      "/agents/agent-a/chat",
+    );
+    expect(screen.getByRole("link", { name: "聊天" })).toHaveAttribute(
+      "href",
+      "/agents/agent-a/chat",
+    );
+  });
+
   it("creates an agent from the dialog and selects the created agent", async () => {
     mockAdmin();
     mocks.api.listAgents

@@ -133,6 +133,28 @@ export class AgentWorkspaceService {
     return this.parseManagedSkills(content);
   }
 
+  async readSkillsConfigVersion(
+    agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">,
+    configVersion: string
+  ): Promise<SkillConfigEntry[]> {
+    if (!/^cfg_[a-f0-9]{16}$/.test(configVersion)) {
+      throw new Error("skill config version is invalid");
+    }
+    const descriptor = this.descriptorFromAgent(agent);
+    const versionPath = join(descriptor.workspacePath, ".skills-state", "versions", configVersion, "skills.yaml");
+    this.assertInsideRoot(descriptor.rootPath, versionPath);
+    await this.assertNoSymlinkEscape(descriptor.rootPath, versionPath);
+    const stat = await this.lstatIfExists(versionPath);
+    if (!stat?.isFile() || stat.isSymbolicLink()) {
+      throw new Error("immutable skill config version is unavailable");
+    }
+    const content = await readFile(versionPath, "utf8");
+    if (this.buildConfigVersion(content) !== configVersion) {
+      throw new Error("skill config version integrity check failed");
+    }
+    return this.parseManagedSkills(content);
+  }
+
   async stageSkillsConfig(
     agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">,
     mutation: AgentSkillMutation
