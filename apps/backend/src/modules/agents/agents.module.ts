@@ -46,6 +46,6 @@ import {
     AgentWorkflowRuntimeClient,
     AgentWorkflowSnapshotService
   ],
-  exports: [AgentsService, AgentSkillsService, AgentWorkflowsService, AgentWorkflowSnapshotService]
+  exports: [AgentsService, AgentWorkspaceService, AgentSkillsService, AgentWorkflowsService, AgentWorkflowSnapshotService]
 })
 export class AgentsModule {}

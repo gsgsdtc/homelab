@@ -59,6 +59,7 @@ describe("AgentsService", () => {
 
     const result = await service.create({
       name: "Ops Agent",
+      modelProviderId: "provider_1",
       modelProvider: "openai",
       modelSecretRef: "OPENAI_API_KEY",
       soul: "Keep production stable."
@@ -72,6 +73,7 @@ describe("AgentsService", () => {
         status: AgentStatus.initializing,
         workspaceName: expect.stringMatching(/^ops-agent--[a-z0-9]{8}$/),
         workspacePath: expect.stringMatching(/^\.homelab\/agents\/ops-agent--[a-z0-9]{8}$/),
+        modelProviderId: "provider_1",
         modelSecretRef: "OPENAI_API_KEY"
       })
     });

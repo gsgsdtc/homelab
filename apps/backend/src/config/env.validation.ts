@@ -9,6 +9,8 @@ export interface AppEnvironment {
   HOMELAB_WORKFLOW_ALLOWED_TOOL_IMPORTS: string[];
   HOMELAB_WORKFLOW_ALLOWED_ENV: string[];
   MODEL_PROVIDER_ENCRYPTION_KEY: string;
+  NODE_ENV: string;
+  CHAT_TEST_CONTROL_ENABLED: boolean;
 }
 
 export function validateEnvironment(
@@ -52,6 +54,8 @@ export function validateEnvironment(
     ),
     HOMELAB_WORKFLOW_ALLOWED_ENV: parseList(config.HOMELAB_WORKFLOW_ALLOWED_ENV),
     MODEL_PROVIDER_ENCRYPTION_KEY: modelProviderEncryptionKey,
+    NODE_ENV: String(config.NODE_ENV ?? "development"),
+    CHAT_TEST_CONTROL_ENABLED: String(config.CHAT_TEST_CONTROL_ENABLED ?? "false").toLowerCase() === "true",
   };
 }
 
