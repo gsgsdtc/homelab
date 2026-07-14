@@ -127,10 +127,15 @@ describe("DynamicImportMastraWorkflowRuntimeRegistry", () => {
     expect(registry.getWorkflow("agent-1", "support-triage")).toEqual({ id: "v2" });
   });
 
+  /**
+   * @doc GFU-27 F1 R13
+   * @purpose Verify immutable activeHash loads return an explicit executable envelope.
+   * @context A direct executable return can be assimilated as a thenable and hang snapshot capture.
+   */
   it("loads an immutable DB workflow source by active hash when the runtime cache is cold", async () => {
     const registry = new DynamicImportMastraWorkflowRuntimeRegistry();
 
-    const executable = await registry.loadWorkflowVersion({
+    const loaded = await registry.loadWorkflowVersion({
       agentId: "agent-1",
       workflowKey: "default",
       sourceHash: "hash-db-v1",
@@ -138,8 +143,90 @@ describe("DynamicImportMastraWorkflowRuntimeRegistry", () => {
       extension: "ts"
     });
 
+    const executable = loaded.executable;
     expect(executable).toEqual({ id: "default", committed: true });
     expect(registry.getWorkflow("agent-1", "default", "hash-db-v1")).toBe(executable);
+  });
+
+  /**
+   * @doc GFU-27 F1 R13 / second-round PR #36 blocker 1
+   * @purpose Verify the real Mastra builder `.then` never participates in Promise resolution during cold load.
+   * @context A regression makes every cold-cache chat request remain pending after process restart.
+   */
+  it("returns a real committed Mastra workflow in a non-thenable envelope on a cold load", async () => {
+    const registry = new DynamicImportMastraWorkflowRuntimeRegistry();
+    const source = [
+      'import { createWorkflow } from "@mastra/core/workflows";',
+      'const workflow = createWorkflow({ id: "default" });',
+      "workflow.commit();",
+      "export default workflow;",
+      ""
+    ].join("\n");
+
+    const result = await Promise.race([
+      registry
+        .loadWorkflowVersion({
+          agentId: "agent-real-mastra",
+          workflowKey: "default",
+          sourceHash: "hash-real-mastra-cold",
+          source,
+          extension: "ts"
+        })
+        .then((loaded) => ({ status: "loaded" as const, loaded })),
+      new Promise<{ status: "still-pending" }>((resolve) =>
+        setTimeout(() => resolve({ status: "still-pending" }), 100)
+      )
+    ]);
+
+    expect(result.status).toBe("loaded");
+    expect((result as any).loaded).toEqual({ executable: expect.objectContaining({ committed: true }) });
+    expect(typeof (result as any).loaded.executable.then).toBe("function");
+  });
+
+  /**
+   * @doc GFU-27 F3 R4a / second-round PR #36 blocker 2
+   * @purpose Verify top-level and aliased handlers are rejected before the default chat module executes.
+   * @context A regression permits module-load side effects before the runtime model-only guard runs.
+   */
+  it.each([
+    ["top-level side effect", 'globalThis.__chatWorkflowSideEffects += 1;'],
+    [
+      "aliased handler invocation",
+      'const ordinaryHandler = () => { globalThis.__chatWorkflowSideEffects += 1; };\nordinaryHandler();'
+    ]
+  ])("rejects a %s before loading the default chat module", async (_name, sideEffectSource) => {
+    (globalThis as any).__chatWorkflowSideEffects = 0;
+    const registry = new DynamicImportMastraWorkflowRuntimeRegistry();
+    const source = [
+      'import { createWorkflow } from "@mastra/core/workflows";',
+      sideEffectSource,
+      'const workflow = createWorkflow({ id: "default" });',
+      "workflow.commit();",
+      "export default workflow;",
+      ""
+    ].join("\n");
+
+    const result = await Promise.race([
+      registry
+        .loadWorkflowVersion({
+          agentId: `agent-side-effect-${_name}`,
+          workflowKey: "default",
+          sourceHash: `hash-side-effect-${_name}`,
+          source,
+          extension: "ts"
+        })
+        .then(
+          () => ({ status: "loaded" as const }),
+          () => ({ status: "rejected" as const })
+        ),
+      new Promise<{ status: "still-pending" }>((resolve) =>
+        setTimeout(() => resolve({ status: "still-pending" }), 100)
+      )
+    ]);
+
+    expect(result.status).toBe("rejected");
+    expect((globalThis as any).__chatWorkflowSideEffects).toBe(0);
+    delete (globalThis as any).__chatWorkflowSideEffects;
   });
 
   function workflowPath(fileName: string): string {

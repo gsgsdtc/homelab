@@ -117,6 +117,9 @@ importers:
       rxjs:
         specifier: ^7.8.1
         version: 7.8.2
+      tiktoken:
+        specifier: 1.0.22
+        version: 1.0.22
       typescript:
         specifier: 5.7.2
         version: 5.7.2
@@ -4885,6 +4888,9 @@ packages:
 
   through@2.3.8:
     resolution: {integrity: sha512-w89qg7PI8wAdvX60bMDP+bFoD5Dvhm9oLheFp5O4a2QF0cSBGsBX4qZmadPMvVqlLJBBci+WqGGOAPvcDeNSVg==}
+
+  tiktoken@1.0.22:
+    resolution: {integrity: sha512-PKvy1rVF1RibfF3JlXBSP0Jrcw2uq3yXdgcEXtKTYn3QJ/cBRBHDnrJ5jHky+MENZ6DIPwNUGWpkVx+7joCpNA==}
 
   tinybench@2.9.0:
     resolution: {integrity: sha512-0+DUvqWMValLmha6lr4kD8iAMK1HzV0/aKnCtWb9v9641TnP/MFb7Pc2bxoxQjTXAErryXVgUOfv2YqNllqGeg==}
@@ -10981,6 +10987,8 @@ snapshots:
       minimatch: 10.2.5
 
   through@2.3.8: {}
+
+  tiktoken@1.0.22: {}
 
   tinybench@2.9.0: {}
 

@@ -1,5 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { Buffer } from "buffer";
+import { encoding_for_model, get_encoding, Tiktoken } from "tiktoken";
 import { ChatTestControlService } from "../chat-test-control/chat-test-control.service";
 import { executionError } from "./chat.errors";
 import { MastraChatAdapter, MastraChatExecuteInput } from "./mastra-chat.adapter";
@@ -16,6 +17,8 @@ type AdapterControl = Pick<
 
 @Injectable()
 export class OpenAICompatibleMastraChatAdapter implements MastraChatAdapter {
+  private readonly tokenizers = new Map<string, Tiktoken>();
+
   constructor(
     @Inject(ChatTestControlService) private readonly testControl: AdapterControl,
     private readonly runtime: MastraChatRuntimeExecutor
@@ -66,8 +69,22 @@ export class OpenAICompatibleMastraChatAdapter implements MastraChatAdapter {
     return { text };
   }
 
-  countTokens(value: string): number {
-    return [...value].length;
+  countTokens(value: string, snapshot?: MastraChatExecuteInput["snapshot"]): number {
+    const providerId = snapshot?.provider.id ?? "openai-compatible";
+    const model = snapshot?.provider.model ?? "cl100k_base";
+    const cacheKey = `${providerId}:${model}`;
+    let tokenizer = this.tokenizers.get(cacheKey);
+    if (!tokenizer) {
+      try {
+        tokenizer = encoding_for_model(model as Parameters<typeof encoding_for_model>[0]);
+      } catch {
+        // OpenAI-compatible providers may expose custom deployment names. The
+        // pinned cl100k_base fallback keeps their resource accounting stable.
+        tokenizer = get_encoding("cl100k_base");
+      }
+      this.tokenizers.set(cacheKey, tokenizer);
+    }
+    return tokenizer.encode(value, [], []).length;
   }
 
   private async invokeProvider(input: MastraChatExecuteInput): Promise<{ text: string }> {

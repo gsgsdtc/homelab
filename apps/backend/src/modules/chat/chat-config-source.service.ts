@@ -146,13 +146,16 @@ export class ChatConfigSourceService {
     }
     let executable = this.workflowRegistry.getWorkflow(agent.id, "default", workflow.activeHash);
     try {
-      executable ??= await this.workflowRegistry.loadWorkflowVersion({
-        agentId: agent.id,
-        workflowKey: "default",
-        sourceHash: workflow.activeHash,
-        source: version.source,
-        extension: version.extension === "js" ? "js" : "ts"
-      });
+      if (!executable) {
+        const loaded = await this.workflowRegistry.loadWorkflowVersion({
+          agentId: agent.id,
+          workflowKey: "default",
+          sourceHash: workflow.activeHash,
+          source: version.source,
+          extension: version.extension === "js" ? "js" : "ts"
+        });
+        executable = loaded.executable;
+      }
     } catch (error) {
       void error;
       throw executionError({

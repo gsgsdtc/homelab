@@ -1,3 +1,4 @@
+import { DynamicImportMastraWorkflowRuntimeRegistry } from "../src/modules/agents/mastra-workflow-runtime.registry";
 import { ChatConfigSourceService } from "../src/modules/chat/chat-config-source.service";
 
 describe("ChatConfigSourceService immutable skills", () => {
@@ -111,5 +112,58 @@ describe("ChatConfigSourceService immutable skills", () => {
 
     await expect(source.readSkills(agent)).resolves.toEqual([]);
     expect(workspaces.readSkillsConfigVersion).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatConfigSourceService active workflow", () => {
+  /**
+   * @doc GFU-27 F1 R13 / second-round PR #36 blocker 1
+   * @purpose Verify DB activeHash cold-loads a real Mastra executable without treating its builder `.then` as a Promise.
+   * @context A regression leaves the first chat execution after process restart permanently pending.
+   */
+  it("cold-loads the DB activeHash as a real Mastra executable without thenable assimilation", async () => {
+    const activeHash = "hash-db-active-real-mastra";
+    const prisma = {
+      agentWorkflow: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: "workflow-1",
+          activeHash,
+          reloadStatus: "succeeded"
+        })
+      },
+      agentWorkflowVersion: {
+        findFirst: jest.fn().mockResolvedValue({
+          sourceHash: activeHash,
+          extension: "ts",
+          source: [
+            'import { createWorkflow } from "@mastra/core/workflows";',
+            'const workflow = createWorkflow({ id: "default" });',
+            "workflow.commit();",
+            "export default workflow;",
+            ""
+          ].join("\n")
+        })
+      }
+    };
+    const registry = new DynamicImportMastraWorkflowRuntimeRegistry();
+    const source = new ChatConfigSourceService(prisma as any, {} as any, {} as any, registry);
+
+    const result = await Promise.race([
+      source.readWorkflow({ id: "agent-db-active" } as any).then((workflow) => ({ status: "loaded" as const, workflow })),
+      new Promise<{ status: "still-pending" }>((resolve) =>
+        setTimeout(() => resolve({ status: "still-pending" }), 100)
+      )
+    ]);
+
+    expect(result.status).toBe("loaded");
+    expect((result as any).workflow).toEqual({
+      workflowKey: "default",
+      activeHash,
+      source: expect.any(String),
+      executable: expect.objectContaining({ committed: true, createRun: expect.any(Function) })
+    });
+    expect(registry.getWorkflow("agent-db-active", "default", activeHash)).toBe(
+      (result as any).workflow.executable
+    );
   });
 });

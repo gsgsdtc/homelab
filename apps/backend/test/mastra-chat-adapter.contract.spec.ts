@@ -118,6 +118,29 @@ describe("OpenAICompatibleMastraChatAdapter", () => {
 
   afterEach(() => jest.restoreAllMocks());
 
+  /**
+   * @doc GFU-27 F2 R33/R36 / second-round PR #36 blocker 3
+   * @purpose Verify the production Provider/model tokenizer enforces the 32,000-token boundary when code points diverge.
+   * @context A regression lets non-ASCII context bypass the model context limit and reach the Provider.
+   */
+  it("uses the provider model tokenizer at the 32,000-token boundary instead of code-point length", () => {
+    const { adapter } = createAdapter();
+    const value = "😀".repeat(16_001);
+    const legacySnapshot = {
+      ...snapshot,
+      provider: { ...snapshot.provider, model: "gpt-3.5-turbo" }
+    };
+    const modernSnapshot = {
+      ...snapshot,
+      provider: { ...snapshot.provider, model: "gpt-4o" }
+    };
+
+    expect([...value]).toHaveLength(16_001);
+    expect(adapter.countTokens("😀", legacySnapshot)).toBe(2);
+    expect(adapter.countTokens("😀", modernSnapshot)).toBe(1);
+    expect(adapter.countTokens(value, legacySnapshot)).toBeGreaterThan(32_000);
+  });
+
   it("rejects tool-capable workflows before any provider or tool execution", async () => {
     const { adapter } = createAdapter();
     const fetchSpy = jest.spyOn(global, "fetch");
