@@ -96,6 +96,32 @@ describe("AgentWorkflowValidator", () => {
     }
   });
 
+  it("validates CommonJS require calls with the same module allowlist", () => {
+    expect(() =>
+      validator.validateSource({
+        workflowKey: "support-triage",
+        extension: "js",
+        source: 'const { z } = require("zod");\nconst weather = require("@homelab/agent-tools/weather");\n' + sourceFor("support-triage")
+      })
+    ).not.toThrow();
+
+    for (const prefix of [
+      'const child = require("child_process");',
+      'const fs = require("fs");',
+      'const leftPad = require("left-pad");',
+      'const shell = require("@homelab/agent-tools/shell");',
+      "const moduleName = 'zod';\nconst z = require(moduleName);"
+    ]) {
+      expect(() =>
+        validator.validateSource({
+          workflowKey: "support-triage",
+          extension: "js",
+          source: `${prefix}\n${sourceFor("support-triage")}`
+        })
+      ).toThrow(BadRequestException);
+    }
+  });
+
   it("allows only configured tool imports and env variables", () => {
     expect(() =>
       validator.validateSource({
@@ -131,7 +157,10 @@ describe("AgentWorkflowValidator", () => {
       "const { AWS_SECRET_ACCESS_KEY } = process.env;",
       'const key = process["env"].AWS_SECRET_ACCESS_KEY;',
       "const envName = 'WORKFLOW_REGION';\nconst region = process.env[envName];",
-      "const allEnvKeys = Object.keys(process.env);"
+      "const allEnvKeys = Object.keys(process.env);",
+      'const key = require("process").env.AWS_SECRET_ACCESS_KEY;',
+      "const key = globalThis.process.env.AWS_SECRET_ACCESS_KEY;",
+      "const key = global.process.env.AWS_SECRET_ACCESS_KEY;"
     ]) {
       expect(() =>
         validator.validateSource({

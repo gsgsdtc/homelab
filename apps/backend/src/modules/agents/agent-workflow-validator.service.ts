@@ -94,6 +94,14 @@ export class AgentWorkflowValidator {
           throw new BadRequestException("dynamic import must use a literal allowlisted module");
         }
       }
+      if (this.isRequireCall(node)) {
+        const [moduleSpecifier] = node.arguments;
+        if (moduleSpecifier && (ts.isStringLiteral(moduleSpecifier) || ts.isNoSubstitutionTemplateLiteral(moduleSpecifier))) {
+          moduleNames.add(moduleSpecifier.text);
+        } else {
+          throw new BadRequestException("require must use a literal allowlisted module");
+        }
+      }
       ts.forEachChild(node, visit);
     };
     visit(sourceFile);
@@ -116,7 +124,7 @@ export class AgentWorkflowValidator {
         this.assertAllowedEnvName(envName, allowedEnvNames);
         return;
       }
-      if (this.isProcessEnvDotAccess(node) || this.isProcessEnvElementAccess(node)) {
+      if (this.isEnvObjectReference(node)) {
         throw new BadRequestException("workflow env access must directly read an allowlisted env name");
       }
       ts.forEachChild(node, visit);
@@ -147,6 +155,31 @@ export class AgentWorkflowValidator {
       return node.text;
     }
     return null;
+  }
+
+  private isRequireCall(node: ts.Node): node is ts.CallExpression {
+    return ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "require";
+  }
+
+  private isEnvObjectReference(node: ts.Node): boolean {
+    if (this.isProcessEnvDotAccess(node) || this.isProcessEnvElementAccess(node)) {
+      return true;
+    }
+    return ts.isPropertyAccessExpression(node) && node.name.text === "env" && this.isProcessObjectReference(node.expression);
+  }
+
+  private isProcessObjectReference(node: ts.Node): boolean {
+    if (ts.isIdentifier(node) && node.text === "process") {
+      return true;
+    }
+    if (ts.isPropertyAccessExpression(node) && node.name.text === "process" && ts.isIdentifier(node.expression)) {
+      return node.expression.text === "globalThis" || node.expression.text === "global";
+    }
+    return this.isRequireProcessCall(node);
+  }
+
+  private isRequireProcessCall(node: ts.Node): boolean {
+    return this.isRequireCall(node) && this.literalText(node.arguments[0]) === "process";
   }
 
   private assertAllowedEnvName(envName: string, allowedEnvNames: Set<string>): void {
