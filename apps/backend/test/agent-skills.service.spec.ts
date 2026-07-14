@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException } from "@nestjs/common";
+import { ForbiddenException, UnprocessableEntityException } from "@nestjs/common";
 import { AgentSkillsService } from "../src/modules/agents/agent-skills.service";
 
 describe("AgentSkillsService", () => {
@@ -7,7 +7,8 @@ describe("AgentSkillsService", () => {
     id: "agent-123",
     name: "Ops Agent",
     workspacePath: ".homelab/agents/ops-agent--agent123",
-    workspaceName: "ops-agent--agent123"
+    workspaceName: "ops-agent--agent123",
+    status: "ready"
   };
 
   const prisma = {
@@ -115,29 +116,65 @@ describe("AgentSkillsService", () => {
     prisma.agentSkillInstallation.update.mockResolvedValue({});
     prisma.agentSkillInstallation.delete.mockResolvedValue({});
     prisma.$transaction.mockImplementation(async (fn: any) => fn(prisma));
-    validator.validate.mockResolvedValue({ resolvedVersion: "1.3.0", manifest: { name: "skill-a" } });
+    validator.validate.mockResolvedValue({
+      resolvedVersion: "1.3.0",
+      manifest: { name: "skill-a" }
+    });
     workspaces.stageSkillsConfig.mockResolvedValue({
       previousConfigVersion: "config-old",
       stagedConfigVersion: "config-new",
       config: { skills: [{ name: "skill-a", version: "1.3.0" }] }
     });
-    workspaces.commitSkillsConfig.mockResolvedValue({ activeConfigVersion: "config-new" });
-    workspaces.rollbackSkillsConfig.mockResolvedValue({ activeConfigVersion: "config-old" });
+    workspaces.commitSkillsConfig.mockResolvedValue({
+      activeConfigVersion: "config-new"
+    });
+    workspaces.rollbackSkillsConfig.mockResolvedValue({
+      activeConfigVersion: "config-old"
+    });
     reloadClient.reloadSkills.mockResolvedValue({
       reloadStatus: "pending_restart",
       effectiveFor: "next_task"
     });
   });
 
+  it("rejects non-ready writes before audit or staging side effects", async () => {
+    prisma.agent.findUnique.mockResolvedValue({
+      ...agent,
+      status: "init_failed"
+    });
+    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+
+    await expect(
+      service.installAdmin(
+        "agent-123",
+        {
+          skillName: "skill-a",
+          sourceType: "registry",
+          sourceId: "source-1",
+          version: "1.3.0"
+        },
+        "admin-1"
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: "AGENT_NOT_READY" })
+    });
+    expect(prisma.agentSkillChange.create).not.toHaveBeenCalled();
+    expect(workspaces.stageSkillsConfig).not.toHaveBeenCalled();
+  });
+
   it("installs from a trusted source and returns pending_restart when no real reload endpoint exists", async () => {
     const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
 
-    const result = await service.installAdmin("agent-123", {
-      skillName: "skill-a",
-      sourceId: "source-1",
-      sourceType: "registry",
-      version: "1.3.0"
-    }, "admin-1");
+    const result = await service.installAdmin(
+      "agent-123",
+      {
+        skillName: "skill-a",
+        sourceId: "source-1",
+        sourceType: "registry",
+        version: "1.3.0"
+      },
+      "admin-1"
+    );
 
     expect(prisma.agentSkillChange.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -149,10 +186,7 @@ describe("AgentSkillsService", () => {
         changeStatus: "pending"
       })
     });
-    expect(workspaces.stageSkillsConfig).toHaveBeenCalledWith(
-      agent,
-      expect.objectContaining({ operation: "install", skillName: "skill-a" })
-    );
+    expect(workspaces.stageSkillsConfig).toHaveBeenCalledWith(agent, expect.objectContaining({ operation: "install", skillName: "skill-a" }));
     expect(workspaces.commitSkillsConfig).toHaveBeenCalledWith(agent, "change-1", "config-new");
     expect(result).toMatchObject({
       changeId: "change-1",
@@ -170,12 +204,16 @@ describe("AgentSkillsService", () => {
     prisma.agentSkillChange.create.mockRejectedValueOnce({ code: "P2002" });
     const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
 
-    const result = await service.installAdmin("agent-123", {
-      skillName: "skill-a",
-      sourceId: "source-1",
-      sourceType: "registry",
-      version: "1.3.0"
-    }, "admin-1");
+    const result = await service.installAdmin(
+      "agent-123",
+      {
+        skillName: "skill-a",
+        sourceId: "source-1",
+        sourceType: "registry",
+        version: "1.3.0"
+      },
+      "admin-1"
+    );
 
     expect(result).toMatchObject({
       changeStatus: "failed",
@@ -191,17 +229,19 @@ describe("AgentSkillsService", () => {
   });
 
   it("rolls back to the previous config when reload fails", async () => {
-    reloadClient.reloadSkills.mockRejectedValueOnce(
-      new Error("reload token ghp_secret1234567890 failed at /repo/private/path")
-    );
+    reloadClient.reloadSkills.mockRejectedValueOnce(new Error("reload token ghp_secret1234567890 failed at /repo/private/path"));
     const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
 
-    const result = await service.installAdmin("agent-123", {
-      skillName: "skill-a",
-      sourceId: "source-1",
-      sourceType: "registry",
-      version: "1.3.0"
-    }, "admin-1");
+    const result = await service.installAdmin(
+      "agent-123",
+      {
+        skillName: "skill-a",
+        sourceId: "source-1",
+        sourceType: "registry",
+        version: "1.3.0"
+      },
+      "admin-1"
+    );
 
     expect(workspaces.rollbackSkillsConfig).toHaveBeenCalledWith(agent, "change-1", "config-old");
     expect(result).toMatchObject({
@@ -220,15 +260,21 @@ describe("AgentSkillsService", () => {
     reloadClient.reloadSkills.mockRejectedValueOnce(new Error("reload failed"));
     const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
 
-    await service.installAdmin("agent-123", {
-      skillName: "skill-a",
-      sourceId: "source-1",
-      sourceType: "registry",
-      version: "1.3.0"
-    }, "admin-1");
+    await service.installAdmin(
+      "agent-123",
+      {
+        skillName: "skill-a",
+        sourceId: "source-1",
+        sourceType: "registry",
+        version: "1.3.0"
+      },
+      "admin-1"
+    );
 
     expect(prisma.agentSkillInstallation.delete).toHaveBeenCalledWith({
-      where: { agentId_skillName: { agentId: "agent-123", skillName: "skill-a" } }
+      where: {
+        agentId_skillName: { agentId: "agent-123", skillName: "skill-a" }
+      }
     });
   });
 
@@ -260,15 +306,21 @@ describe("AgentSkillsService", () => {
     reloadClient.reloadSkills.mockRejectedValueOnce(new Error("reload failed"));
     const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
 
-    await service.updateAdmin("agent-123", {
-      skillName: "skill-a",
-      sourceId: "source-1",
-      sourceType: "registry",
-      version: "1.3.0"
-    }, "admin-1");
+    await service.updateAdmin(
+      "agent-123",
+      {
+        skillName: "skill-a",
+        sourceId: "source-1",
+        sourceType: "registry",
+        version: "1.3.0"
+      },
+      "admin-1"
+    );
 
     expect(prisma.agentSkillInstallation.update).toHaveBeenCalledWith({
-      where: { agentId_skillName: { agentId: "agent-123", skillName: "skill-a" } },
+      where: {
+        agentId_skillName: { agentId: "agent-123", skillName: "skill-a" }
+      },
       data: expect.objectContaining({
         sourceType: "registry",
         sourceId: "source-1",
@@ -310,7 +362,9 @@ describe("AgentSkillsService", () => {
     await service.removeAdmin("agent-123", { skillName: "skill-a" }, "admin-1");
 
     expect(prisma.agentSkillInstallation.update).toHaveBeenCalledWith({
-      where: { agentId_skillName: { agentId: "agent-123", skillName: "skill-a" } },
+      where: {
+        agentId_skillName: { agentId: "agent-123", skillName: "skill-a" }
+      },
       data: expect.objectContaining({
         sourceType: "registry",
         sourceId: "source-1",
@@ -325,12 +379,16 @@ describe("AgentSkillsService", () => {
     prisma.$transaction.mockRejectedValueOnce(new Error("installation update failed"));
     const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
 
-    const result = await service.installAdmin("agent-123", {
-      skillName: "skill-a",
-      sourceId: "source-1",
-      sourceType: "registry",
-      version: "1.3.0"
-    }, "admin-1");
+    const result = await service.installAdmin(
+      "agent-123",
+      {
+        skillName: "skill-a",
+        sourceId: "source-1",
+        sourceType: "registry",
+        version: "1.3.0"
+      },
+      "admin-1"
+    );
 
     expect(workspaces.commitSkillsConfig).toHaveBeenCalledWith(agent, "change-1", "config-new");
     expect(workspaces.rollbackSkillsConfig).toHaveBeenCalledWith(agent, "change-1", "config-old");
@@ -348,7 +406,12 @@ describe("AgentSkillsService", () => {
 
     await expect(
       service.selfUpdate(
-        { id: "app-key-1", name: "agent key", agentName: "Ops Agent", scopes: ["agent:skills:self-update"] },
+        {
+          id: "app-key-1",
+          name: "agent key",
+          agentName: "Ops Agent",
+          scopes: ["agent:skills:self-update"]
+        },
         {
           agentId: "agent-123",
           operation: "install",
@@ -371,8 +434,14 @@ describe("AgentSkillsService", () => {
       isTrusted: true
     });
     validator.validate
-      .mockResolvedValueOnce({ resolvedVersion: "1.0.0", manifest: { name: "qa-smoke-skill" } })
-      .mockResolvedValueOnce({ resolvedVersion: "1.0.1", manifest: { name: "qa-smoke-skill" } });
+      .mockResolvedValueOnce({
+        resolvedVersion: "1.0.0",
+        manifest: { name: "qa-smoke-skill" }
+      })
+      .mockResolvedValueOnce({
+        resolvedVersion: "1.0.1",
+        manifest: { name: "qa-smoke-skill" }
+      });
     workspaces.stageSkillsConfig
       .mockResolvedValueOnce({
         previousConfigVersion: null,
@@ -395,12 +464,16 @@ describe("AgentSkillsService", () => {
       .mockResolvedValueOnce({ activeConfigVersion: "config-empty" });
     const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
 
-    const installed = await service.installAdmin("agent-123", {
-      skillName: "qa-smoke-skill",
-      sourceId: "builtin-registry",
-      sourceType: "registry",
-      version: "1.0.0"
-    }, "admin-1");
+    const installed = await service.installAdmin(
+      "agent-123",
+      {
+        skillName: "qa-smoke-skill",
+        sourceId: "builtin-registry",
+        sourceType: "registry",
+        version: "1.0.0"
+      },
+      "admin-1"
+    );
 
     const installedRecord = {
       agentId: "agent-123",
@@ -416,14 +489,22 @@ describe("AgentSkillsService", () => {
     prisma.agentSkillInstallation.findUnique.mockResolvedValue(installedRecord);
     prisma.agentSkillInstallation.findMany.mockResolvedValue([installedRecord]);
 
-    const updated = await service.updateAdmin("agent-123", {
-      skillName: "qa-smoke-skill",
-      sourceId: "builtin-registry",
-      sourceType: "registry",
-      version: "1.0.1"
-    }, "admin-1");
+    const updated = await service.updateAdmin(
+      "agent-123",
+      {
+        skillName: "qa-smoke-skill",
+        sourceId: "builtin-registry",
+        sourceType: "registry",
+        version: "1.0.1"
+      },
+      "admin-1"
+    );
 
-    const updatedRecord = { ...installedRecord, version: "1.0.1", configVersion: "config-101" };
+    const updatedRecord = {
+      ...installedRecord,
+      version: "1.0.1",
+      configVersion: "config-101"
+    };
     prisma.agentSkillInstallation.findUnique.mockResolvedValue(updatedRecord);
     prisma.agentSkillInstallation.findMany.mockResolvedValue([updatedRecord]);
 
@@ -439,18 +520,32 @@ describe("AgentSkillsService", () => {
       });
     }
     expect(prisma.agentSkillChange.create).toHaveBeenNthCalledWith(1, {
-      data: expect.objectContaining({ operation: "install", skillName: "qa-smoke-skill", sourceId: "builtin-registry" })
+      data: expect.objectContaining({
+        operation: "install",
+        skillName: "qa-smoke-skill",
+        sourceId: "builtin-registry"
+      })
     });
     expect(prisma.agentSkillChange.create).toHaveBeenNthCalledWith(2, {
-      data: expect.objectContaining({ operation: "update", requestedVersion: "1.0.1" })
+      data: expect.objectContaining({
+        operation: "update",
+        requestedVersion: "1.0.1"
+      })
     });
     expect(prisma.agentSkillChange.create).toHaveBeenNthCalledWith(3, {
-      data: expect.objectContaining({ operation: "remove", requestedVersion: null })
+      data: expect.objectContaining({
+        operation: "remove",
+        requestedVersion: null
+      })
     });
     expect(workspaces.stageSkillsConfig).toHaveBeenNthCalledWith(
       3,
       agent,
-      expect.objectContaining({ operation: "remove", skillName: "qa-smoke-skill", currentSkills: [expect.objectContaining({ version: "1.0.1" })] })
+      expect.objectContaining({
+        operation: "remove",
+        skillName: "qa-smoke-skill",
+        currentSkills: [expect.objectContaining({ version: "1.0.1" })]
+      })
     );
   });
 
@@ -459,13 +554,17 @@ describe("AgentSkillsService", () => {
     const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
 
     await expect(
-      service.installAdmin("agent-123", {
-        skillName: "skill-a",
-        sourceId: "missing-source",
-        sourceType: "git",
-        version: "main"
-      }, "admin-1")
-    ).rejects.toThrow(BadRequestException);
+      service.installAdmin(
+        "agent-123",
+        {
+          skillName: "skill-a",
+          sourceId: "missing-source",
+          sourceType: "git",
+          version: "main"
+        },
+        "admin-1"
+      )
+    ).rejects.toThrow(UnprocessableEntityException);
     expect(workspaces.stageSkillsConfig).not.toHaveBeenCalled();
   });
 });

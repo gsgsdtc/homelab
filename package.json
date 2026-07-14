@@ -6,6 +6,7 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
+    "e2e:fixture": "pnpm --filter @homelab/backend e2e:fixture",
     "lint": "turbo run lint",
     "dev": "turbo run dev --parallel",
     "format": "prettier --write \"**/*.{ts,js,json,md,yml,yaml,prisma}\""

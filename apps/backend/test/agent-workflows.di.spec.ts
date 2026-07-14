@@ -49,7 +49,10 @@ describe("AgentWorkflows DI reload wiring", () => {
     prisma.agentWorkflow.updateMany.mockResolvedValue({ count: 1 });
     prisma.agentWorkflowVersion.findMany.mockResolvedValue([]);
     prisma.$transaction.mockImplementation(async (callback: any) => callback(prisma));
-    mastraRegistry.reloadWorkflow.mockResolvedValue({ status: "succeeded", loadedAt: now });
+    mastraRegistry.reloadWorkflow.mockResolvedValue({
+      status: "succeeded",
+      loadedAt: now
+    });
   });
 
   afterEach(async () => {
@@ -83,6 +86,7 @@ describe("AgentWorkflows DI reload wiring", () => {
           load: [
             () => ({
               HOMELAB_REPO_ROOT: repoRoot,
+              MODEL_PROVIDER_ENCRYPTION_KEY: Buffer.alloc(32).toString("base64"),
               HOMELAB_WORKFLOW_RUNTIME_URL: undefined,
               HOMELAB_WORKFLOW_RELOAD_TIMEOUT_MS: 30_000
             })
@@ -98,7 +102,9 @@ describe("AgentWorkflows DI reload wiring", () => {
       .compile();
     const service = moduleRef.get(AgentWorkflowsService);
 
-    const result = await service.reload("agent-1", "support-triage", { expectedDraftHash: draftHash });
+    const result = await service.reload("agent-1", "support-triage", {
+      expectedDraftHash: draftHash
+    });
 
     expect(mastraRegistry.reloadWorkflow).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -133,7 +139,10 @@ describe("AgentWorkflows DI reload wiring", () => {
     const item = workflow({ draftHash, activeHash: "active-v1" });
     await writeWorkflowSource(source);
     prisma.agentWorkflow.findFirst.mockResolvedValue(item);
-    mastraRegistry.reloadWorkflow.mockResolvedValue({ status: "failed", error: "Mastra compile failed" });
+    mastraRegistry.reloadWorkflow.mockResolvedValue({
+      status: "failed",
+      error: "Mastra compile failed"
+    });
     const moduleRef = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({
@@ -142,6 +151,7 @@ describe("AgentWorkflows DI reload wiring", () => {
           load: [
             () => ({
               HOMELAB_REPO_ROOT: repoRoot,
+              MODEL_PROVIDER_ENCRYPTION_KEY: Buffer.alloc(32).toString("base64"),
               HOMELAB_WORKFLOW_RUNTIME_URL: undefined,
               HOMELAB_WORKFLOW_RELOAD_TIMEOUT_MS: 30_000
             })
@@ -157,7 +167,9 @@ describe("AgentWorkflows DI reload wiring", () => {
       .compile();
     const service = moduleRef.get(AgentWorkflowsService);
 
-    const result = await service.reload("agent-1", "support-triage", { expectedDraftHash: draftHash });
+    const result = await service.reload("agent-1", "support-triage", {
+      expectedDraftHash: draftHash
+    });
 
     expect(mastraRegistry.reloadWorkflow).toHaveBeenCalledWith(expect.objectContaining({ sourceHash: draftHash }));
     expect(prisma.agentWorkflow.updateMany).not.toHaveBeenCalled();
@@ -172,7 +184,6 @@ describe("AgentWorkflows DI reload wiring", () => {
     await mkdir(sourceRoot, { recursive: true });
     await writeFile(join(sourceRoot, "support-triage.ts"), source, "utf8");
   }
-
 });
 
 function agent(overrides: Record<string, unknown> = {}) {
@@ -182,6 +193,7 @@ function agent(overrides: Record<string, unknown> = {}) {
     slug: "ops-agent",
     workspaceName: "ops-agent--agent123",
     workspacePath: ".homelab/agents/ops-agent--agent123",
+    status: "ready",
     ...overrides
   };
 }

@@ -84,7 +84,7 @@ describe("Agent skills API", () => {
     prisma.agentSkillChange.findUnique.mockResolvedValue(null);
   });
 
-  it("returns 400 when an install references an unknown source", async () => {
+  it("returns 422 when an install references an unknown source", async () => {
     const response = await fetch(`${baseUrl}/agents/agent-1/skills/install`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -96,9 +96,9 @@ describe("Agent skills API", () => {
       })
     });
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(422);
     await expect(response.json()).resolves.toMatchObject({
-      statusCode: 400,
+      code: "SKILL_SOURCE_INVALID",
       message: "skill source is not trusted or does not exist"
     });
   });

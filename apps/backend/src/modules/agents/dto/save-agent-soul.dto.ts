@@ -1,7 +1,15 @@
-import { IsString, MaxLength } from "class-validator";
+import { IsDefined, IsInt, IsString, Min } from "class-validator";
 
 export class SaveAgentSoulDto {
+  @IsDefined()
   @IsString()
-  @MaxLength(20000)
-  soul!: string;
+  content?: string;
+
+  @IsDefined()
+  @IsInt()
+  @Min(1)
+  expectedRevision!: number;
+
+  /** Compile-time compatibility only; ValidationPipe rejects the legacy API field. */
+  declare soul?: string;
 }

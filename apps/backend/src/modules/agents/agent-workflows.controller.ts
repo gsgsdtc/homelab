@@ -4,7 +4,7 @@ import { Roles } from "../../common/decorators/roles.decorator";
 import { RolesGuard } from "../../common/guards/roles.guard";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { AgentWorkflowsService } from "./agent-workflows.service";
-import { CreateWorkflowDto, ReloadWorkflowDto, RollbackWorkflowDto, WorkflowSourceDto } from "./dto/workflow.dto";
+import { CreateWorkflowDto, ReloadWorkflowDto, RollbackWorkflowDto, WorkflowContentDto, WorkflowSourceDto } from "./dto/workflow.dto";
 
 @Controller("agents/:agentId/workflows")
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -23,11 +23,7 @@ export class AgentWorkflowsController {
   }
 
   @Get(":workflowKey")
-  get(
-    @Param("agentId") agentId: string,
-    @Param("workflowKey") workflowKey: string,
-    @Query("view") view: "active" | "draft" = "draft"
-  ) {
+  get(@Param("agentId") agentId: string, @Param("workflowKey") workflowKey: string, @Query("view") view: "active" | "draft" = "draft") {
     return this.workflows.get(agentId, workflowKey, view);
   }
 
@@ -37,7 +33,7 @@ export class AgentWorkflowsController {
   }
 
   @Post(":workflowKey/validate")
-  validate(@Param("agentId") agentId: string, @Param("workflowKey") workflowKey: string, @Body() dto: WorkflowSourceDto) {
+  validate(@Param("agentId") agentId: string, @Param("workflowKey") workflowKey: string, @Body() dto: WorkflowContentDto) {
     return this.workflows.validate(agentId, workflowKey, dto);
   }
 
@@ -59,5 +55,17 @@ export class AgentWorkflowsController {
   @Post(":workflowKey/rollback")
   rollback(@Param("agentId") agentId: string, @Param("workflowKey") workflowKey: string, @Body() dto: RollbackWorkflowDto) {
     return this.workflows.rollback(agentId, workflowKey, dto);
+  }
+}
+
+@Controller("agents/:agentId/workflow-capabilities")
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(UserRole.ADMIN)
+export class AgentWorkflowCapabilitiesController {
+  constructor(private readonly workflows: AgentWorkflowsService) {}
+
+  @Get()
+  get(@Param("agentId") agentId: string) {
+    return this.workflows.capabilities(agentId);
   }
 }

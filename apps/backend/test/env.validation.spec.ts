@@ -8,9 +8,7 @@ describe("validateEnvironment", () => {
   });
 
   it("rejects startup configuration when provider encryption key is missing", () => {
-    expect(() => validateEnvironment({ JWT_SECRET: "local-secret" })).toThrow(
-      "MODEL_PROVIDER_ENCRYPTION_KEY is required"
-    );
+    expect(() => validateEnvironment({ JWT_SECRET: "local-secret" })).toThrow("MODEL_PROVIDER_ENCRYPTION_KEY is required");
   });
 
   it("rejects provider encryption keys that are not 32 decoded bytes", () => {

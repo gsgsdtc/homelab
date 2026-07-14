@@ -1,4 +1,4 @@
-import { IsOptional, IsString, Matches, MaxLength, MinLength } from "class-validator";
+import { IsOptional, IsString, MaxLength, MinLength } from "class-validator";
 
 export class CreateAgentDto {
   @IsString()
@@ -14,16 +14,12 @@ export class CreateAgentDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(80)
-  modelProvider?: string;
-
-  @IsOptional()
   @IsString()
-  @Matches(/^[A-Z][A-Z0-9_]{1,127}$/)
-  modelSecretRef?: string;
+  @MaxLength(128)
+  modelProviderId?: string;
 
-  @IsOptional()
-  @IsString()
-  @MaxLength(20000)
-  soul?: string;
+  /** Compile-time compatibility only; ValidationPipe rejects legacy API fields. */
+  declare modelProvider?: string;
+  declare modelSecretRef?: string;
+  declare soul?: string;
 }

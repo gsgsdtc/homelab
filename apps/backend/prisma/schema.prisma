@@ -123,7 +123,10 @@ model Agent {
   workspacePath       String      @unique
   modelProvider       String?
   modelSecretRef      String?
+  modelProviderId     String?
   soul                String      @default("")
+  revision            Int         @default(1)
+  soulRevision        Int         @default(1)
   initializationError String?
   initializedAt       DateTime?
   createdAt           DateTime    @default(now())
@@ -132,6 +135,10 @@ model Agent {
   skillInstallations  AgentSkillInstallation[]
   selfUpdatePolicies  AgentSkillSelfUpdatePolicy[]
   workflows           AgentWorkflow[]
+  provider            ModelProvider? @relation(fields: [modelProviderId], references: [id], onDelete: Restrict)
+  createRequest       AgentCreateRequest?
+
+  @@index([modelProviderId])
 }
 
 model ModelProvider {
@@ -146,6 +153,16 @@ model ModelProvider {
   isDefault       Boolean           @default(false)
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
+  agents          Agent[]
+}
+
+model AgentCreateRequest {
+  key         String   @id
+  payloadHash String
+  agentId     String   @unique
+  createdAt   DateTime @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 }
 
 model AgentSkillSource {
@@ -161,6 +178,36 @@ model AgentSkillSource {
   changes       AgentSkillChange[]
   installations AgentSkillInstallation[]
   policies      AgentSkillSelfUpdatePolicy[]
+  catalogSkills AgentSkillCatalogSkill[]
+}
+
+model AgentSkillCatalogSkill {
+  id          String   @id @default(cuid())
+  sourceId    String
+  skillId     String
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  source   AgentSkillSource          @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  versions AgentSkillCatalogVersion[]
+
+  @@unique([sourceId, skillId])
+  @@index([sourceId, name])
+}
+
+model AgentSkillCatalogVersion {
+  id             String   @id @default(cuid())
+  catalogSkillId String
+  version        String
+  immutableRef   String
+  createdAt      DateTime @default(now())
+
+  skill AgentSkillCatalogSkill @relation(fields: [catalogSkillId], references: [id], onDelete: Cascade)
+
+  @@unique([catalogSkillId, version])
+  @@index([catalogSkillId, createdAt])
 }
 
 model AgentSkillInstallation {
@@ -252,6 +299,7 @@ model AgentWorkflow {
   draftHash   String?
   activeHash  String?
   revision    String?
+  editRevision Int                  @default(1)
   reloadStatus WorkflowReloadStatus @default(draft)
   reloadError  String?              @db.Text
   loadedAt     DateTime?

@@ -273,7 +273,9 @@ run_database_migrations() {
   stage "database migration"
   cd "${SOURCE_DIR}"
   load_env
+  pnpm --filter @homelab/backend provider:migration:preflight
   pnpm --filter @homelab/backend prisma:migrate:deploy
+  pnpm --filter @homelab/backend provider:migration:validate
 }
 
 build_apps() {
