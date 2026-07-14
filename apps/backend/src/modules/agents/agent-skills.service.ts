@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Agent } from "@prisma/client";
 import { AppKeyIdentity } from "../app-keys/app-keys.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -17,8 +17,8 @@ import {
   AgentSkillSourceTypeValue,
   AgentSkillUpdateDto
 } from "./dto/agent-skill-change.dto";
-import { RuntimeReloadResult } from "./runtime-reload-client.service";
-import { SkillValidationResult } from "./skill-package-validator.service";
+import { RuntimeReloadClient, RuntimeReloadResult } from "./runtime-reload-client.service";
+import { SkillPackageValidator, SkillValidationResult } from "./skill-package-validator.service";
 
 type SkillChangeRecord = Record<string, any>;
 type SkillInstallRecord = Record<string, any>;
@@ -46,7 +46,9 @@ export class AgentSkillsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly workspaces: AgentWorkspaceService,
+    @Inject(SkillPackageValidator)
     private readonly validator: SkillPackageValidatorPort,
+    @Inject(RuntimeReloadClient)
     private readonly reloadClient: RuntimeReloadClientPort
   ) {}
 
