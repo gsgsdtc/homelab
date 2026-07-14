@@ -39,6 +39,7 @@ type SkillPackageValidatorPort = {
 type RuntimeReloadClientPort = {
   reloadSkills(agent: Pick<Agent, "id" | "workspacePath">, activeConfigVersion: string): Promise<RuntimeReloadResult>;
 };
+type SkillChangeFailure = Error & { skillChange?: SkillChangeRecord };
 
 @Injectable()
 export class AgentSkillsService {
@@ -194,7 +195,17 @@ export class AgentSkillsService {
 
     try {
       const mutation = await this.validateAndStage(agent, change, operation, skillName, sourceType, sourceId, requestedVersion, currentInstallations);
-      const committed = await this.commitChange(agent, change.id, mutation.stagedConfigVersion, operation, skillName, sourceType, sourceId, mutation.resolvedVersion);
+      const committed = await this.commitChange(
+        agent,
+        change.id,
+        mutation.previousConfigVersion,
+        mutation.stagedConfigVersion,
+        operation,
+        skillName,
+        sourceType,
+        sourceId,
+        mutation.resolvedVersion
+      );
       return await this.reloadAndFinalize(agent, change, committed.activeConfigVersion, mutation.stagedConfigVersion, previousSnapshot);
     } catch (error) {
       return this.failBeforeReload(change, error);
@@ -258,6 +269,7 @@ export class AgentSkillsService {
   private async commitChange(
     agent: Agent,
     changeId: string,
+    previousConfigVersion: string | null,
     stagedConfigVersion: string,
     operation: AgentSkillOperationValue,
     skillName: string,
@@ -303,8 +315,12 @@ export class AgentSkillsService {
       });
       return committed;
     } catch (error) {
-      await this.updateChange(changeId, this.failureData("atomic_switch", "AGENT_SKILL_ATOMIC_SWITCH_FAILED", error));
-      throw error;
+      await this.workspaces.rollbackSkillsConfig(agent, changeId, previousConfigVersion);
+      const failedChange = await this.updateChange(
+        changeId,
+        this.failureData("atomic_switch", "AGENT_SKILL_ATOMIC_SWITCH_FAILED", error)
+      );
+      throw this.withFailedChange(error, failedChange);
     }
   }
 
@@ -388,6 +404,10 @@ export class AgentSkillsService {
   }
 
   private async failBeforeReload(change: SkillChangeRecord, error: unknown): Promise<AgentSkillChangeResult> {
+    const failedChange = this.getFailedChange(error);
+    if (failedChange) {
+      return this.toChangeResult(failedChange);
+    }
     const latest = await (this.prisma as any).agentSkillChange.findUnique?.({ where: { id: change.id } });
     return this.toChangeResult(latest ?? { ...change, ...this.failureData("staging_write", "AGENT_SKILL_CHANGE_FAILED", error) });
   }
@@ -506,6 +526,19 @@ export class AgentSkillsService {
 
   private isUniqueConflict(error: unknown): boolean {
     return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "P2002");
+  }
+
+  private withFailedChange(error: unknown, skillChange: SkillChangeRecord): SkillChangeFailure {
+    const failure: SkillChangeFailure = error instanceof Error ? error : new Error(String(error));
+    failure.skillChange = skillChange;
+    return failure;
+  }
+
+  private getFailedChange(error: unknown): SkillChangeRecord | null {
+    if (error && typeof error === "object" && "skillChange" in error) {
+      return (error as SkillChangeFailure).skillChange ?? null;
+    }
+    return null;
   }
 
   private toChangeResult(change: SkillChangeRecord): AgentSkillChangeResult {

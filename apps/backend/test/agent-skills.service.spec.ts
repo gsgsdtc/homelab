@@ -321,6 +321,28 @@ describe("AgentSkillsService", () => {
     });
   });
 
+  it("restores the previous workspace config when the DB atomic switch fails", async () => {
+    prisma.$transaction.mockRejectedValueOnce(new Error("installation update failed"));
+    const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
+
+    const result = await service.installAdmin("agent-123", {
+      skillName: "skill-a",
+      sourceId: "source-1",
+      sourceType: "registry",
+      version: "1.3.0"
+    }, "admin-1");
+
+    expect(workspaces.commitSkillsConfig).toHaveBeenCalledWith(agent, "change-1", "config-new");
+    expect(workspaces.rollbackSkillsConfig).toHaveBeenCalledWith(agent, "change-1", "config-old");
+    expect(reloadClient.reloadSkills).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      changeStatus: "failed",
+      failedStage: "atomic_switch",
+      errorCode: "AGENT_SKILL_ATOMIC_SWITCH_FAILED",
+      reloadStatus: "unknown"
+    });
+  });
+
   it("rejects agent self-update by default", async () => {
     const service = new AgentSkillsService(prisma, workspaces, validator, reloadClient);
 
