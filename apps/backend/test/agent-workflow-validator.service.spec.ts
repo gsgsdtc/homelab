@@ -3,9 +3,18 @@ import { AgentWorkflowValidator } from "../src/modules/agents/agent-workflow-val
 
 describe("AgentWorkflowValidator", () => {
   const validator = new AgentWorkflowValidator({
-    get: jest.fn((key: string, defaultValue: unknown) =>
-      key === "HOMELAB_WORKFLOW_MAX_SOURCE_BYTES" ? 1024 : defaultValue
-    )
+    get: jest.fn((key: string, defaultValue: unknown) => {
+      if (key === "HOMELAB_WORKFLOW_MAX_SOURCE_BYTES") {
+        return 1024;
+      }
+      if (key === "HOMELAB_WORKFLOW_ALLOWED_TOOL_IMPORTS") {
+        return "@homelab/agent-tools/weather,@homelab/agent-tools/ticketing";
+      }
+      if (key === "HOMELAB_WORKFLOW_ALLOWED_ENV") {
+        return "WORKFLOW_REGION,WORKFLOW_TIMEOUT_MS";
+      }
+      return defaultValue;
+    })
   } as any);
 
   it("accepts a Mastra workflow with allowlisted imports", () => {
@@ -64,16 +73,48 @@ describe("AgentWorkflowValidator", () => {
     }
   });
 
-  it("rejects absolute imports, dynamic nonliteral imports, unknown packages, unregistered tools, and dynamic install attempts", () => {
+  it("rejects absolute imports, dynamic imports outside the allowlist, unknown packages, unregistered tools, and dynamic install attempts", () => {
     const cases = [
       'import x from "/etc/passwd";',
       "const name = '@mastra/core/workflows';\nawait import(name);",
+      'await import("child_process");',
+      'await import("left-pad");',
       'import leftPad from "left-pad";',
       'import tool from "@unknown/tools/weather";',
+      'import shell from "@homelab/agent-tools/shell";',
       'import installer from "npm";'
     ];
 
     for (const prefix of cases) {
+      expect(() =>
+        validator.validateSource({
+          workflowKey: "support-triage",
+          extension: "ts",
+          source: `${prefix}\n${sourceFor("support-triage")}`
+        })
+      ).toThrow(BadRequestException);
+    }
+  });
+
+  it("allows only configured tool imports and env variables", () => {
+    expect(() =>
+      validator.validateSource({
+        workflowKey: "support-triage",
+        extension: "ts",
+        source: [
+          'import { weather } from "@homelab/agent-tools/weather";',
+          'const region = process.env.WORKFLOW_REGION;',
+          'const timeout = process.env["WORKFLOW_TIMEOUT_MS"];',
+          sourceFor("support-triage")
+        ].join("\n")
+      })
+    ).not.toThrow();
+
+    for (const prefix of [
+      'import shell from "@homelab/agent-tools/shell";',
+      "const key = process.env.AWS_SECRET_ACCESS_KEY;",
+      'const token = process.env["GITHUB_TOKEN"];'
+    ]) {
       expect(() =>
         validator.validateSource({
           workflowKey: "support-triage",

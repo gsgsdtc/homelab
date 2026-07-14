@@ -126,6 +126,11 @@ export class AgentWorkflowsService {
     if (dto.expectedDraftHash && dto.expectedDraftHash !== workflow.draftHash) {
       throw new ConflictException("workflow draft changed; refresh before reloading");
     }
+    const agent = await this.findAgent(agentId);
+    const source = await this.workspaces.readWorkflowSource(agent, workflow.workflowKey, workflow.extension as WorkflowExtension);
+    if (this.hash(source) !== workflow.draftHash) {
+      throw new ConflictException("workflow draft source changed; refresh before reloading");
+    }
     await this.prisma.agentWorkflow.update({
       where: { id: workflow.id },
       data: { reloadStatus: "loading", reloadError: null }
@@ -147,11 +152,9 @@ export class AgentWorkflowsService {
       });
       return this.toPublic(failed);
     }
-    const agent = await this.findAgent(agentId);
-    const source = await this.workspaces.readWorkflowSource(agent, workflow.workflowKey, workflow.extension as WorkflowExtension);
     const promoted = await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.agentWorkflow.update({
-        where: { id: workflow.id },
+      const promotedRows = await tx.agentWorkflow.updateMany({
+        where: { id: workflow.id, draftHash: workflow.draftHash, relativePath: workflow.relativePath },
         data: {
           activeHash: workflow.draftHash,
           revision: workflow.draftHash,
@@ -160,6 +163,16 @@ export class AgentWorkflowsService {
           loadedAt: result.loadedAt ?? new Date()
         }
       });
+      if (promotedRows.count !== 1) {
+        await tx.agentWorkflow.update({
+          where: { id: workflow.id },
+          data: {
+            reloadStatus: "failed",
+            reloadError: "workflow draft changed during reload; retry reload"
+          }
+        });
+        return null;
+      }
       await tx.agentWorkflowVersion.create({
         data: {
           workflowId: workflow.id,
@@ -171,8 +184,17 @@ export class AgentWorkflowsService {
         }
       });
       await this.pruneOldVersions(tx, workflow.id, workflow.draftHash!);
+      const updated = await tx.agentWorkflow.findFirst({
+        where: { id: workflow.id }
+      });
+      if (!updated) {
+        throw new NotFoundException("workflow not found");
+      }
       return updated;
     });
+    if (!promoted) {
+      throw new ConflictException("workflow draft changed during reload; retry reload");
+    }
     return this.toPublic(promoted);
   }
 

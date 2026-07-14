@@ -44,17 +44,14 @@ export class AgentWorkflowValidator {
       throw new BadRequestException("workflow source must not contain real secret values; use secretRef");
     }
     this.validateImports(input.source);
+    this.validateEnvironmentAccess(input.source);
     this.validateMastraShape(input);
     this.validateSyntax(input);
   }
 
   private validateImports(source: string): void {
-    if (/import\s*\(\s*[^'"`]/.test(source)) {
-      throw new BadRequestException("dynamic import must use a literal allowlisted module");
-    }
-    const moduleNames = [...source.matchAll(/(?:import\s+(?:[^'"]+\s+from\s+)?|export\s+[^'"]+\s+from\s+)["']([^"']+)["']/g)].map(
-      (match) => match[1]
-    );
+    const moduleNames = this.collectImportSpecifiers(source);
+    const allowedToolImports = new Set(this.configList("HOMELAB_WORKFLOW_ALLOWED_TOOL_IMPORTS"));
     for (const moduleName of moduleNames) {
       if (moduleName.startsWith(".")) {
         if (moduleName.includes("..")) {
@@ -63,6 +60,9 @@ export class AgentWorkflowValidator {
         continue;
       }
       if (moduleName.startsWith("@mastra/") || moduleName.startsWith("@homelab/agent-tools/")) {
+        if (moduleName.startsWith("@homelab/agent-tools/") && !allowedToolImports.has(moduleName)) {
+          throw new BadRequestException(`workflow tool import is not authorized: ${moduleName}`);
+        }
         continue;
       }
       if (ALLOWED_BARE_IMPORTS.has(moduleName) || ALLOWED_NODE_IMPORTS.has(moduleName)) {
@@ -73,6 +73,58 @@ export class AgentWorkflowValidator {
       }
       throw new BadRequestException(`workflow import is not allowlisted: ${moduleName}`);
     }
+  }
+
+  private collectImportSpecifiers(source: string): string[] {
+    const sourceFile = ts.createSourceFile("workflow.ts", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
+    const moduleNames = new Set<string>();
+    const visit = (node: ts.Node) => {
+      if (
+        (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+        node.moduleSpecifier &&
+        ts.isStringLiteral(node.moduleSpecifier)
+      ) {
+        moduleNames.add(node.moduleSpecifier.text);
+      }
+      if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+        const [moduleSpecifier] = node.arguments;
+        if (moduleSpecifier && (ts.isStringLiteral(moduleSpecifier) || ts.isNoSubstitutionTemplateLiteral(moduleSpecifier))) {
+          moduleNames.add(moduleSpecifier.text);
+        } else {
+          throw new BadRequestException("dynamic import must use a literal allowlisted module");
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    return [...moduleNames];
+  }
+
+  private validateEnvironmentAccess(source: string): void {
+    const allowedEnvNames = new Set(this.configList("HOMELAB_WORKFLOW_ALLOWED_ENV"));
+    const envNames = new Set<string>();
+    for (const match of source.matchAll(/\bprocess\s*\.\s*env\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)/g)) {
+      envNames.add(match[1]);
+    }
+    for (const match of source.matchAll(/\bprocess\s*\.\s*env\s*\[\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\]/g)) {
+      envNames.add(match[1]);
+    }
+    for (const envName of envNames) {
+      if (!allowedEnvNames.has(envName)) {
+        throw new BadRequestException(`workflow env variable is not allowlisted: ${envName}`);
+      }
+    }
+  }
+
+  private configList(key: string): string[] {
+    const value = this.config.get<string | string[]>(key, []);
+    if (Array.isArray(value)) {
+      return value.map((item) => item.trim()).filter(Boolean);
+    }
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
   }
 
   private validateMastraShape(input: ValidateWorkflowSourceInput): void {
