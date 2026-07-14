@@ -5,6 +5,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  Optional,
   UnprocessableEntityException
 } from "@nestjs/common";
 import { Agent, AgentStatus } from "@prisma/client";
@@ -22,6 +23,7 @@ import {
 } from "./dto/agent-skill-change.dto";
 import { RuntimeReloadClient, RuntimeReloadResult } from "./runtime-reload-client.service";
 import { SkillPackageValidator, SkillValidationResult } from "./skill-package-validator.service";
+import { Gfu29TestControlService } from "./gfu29-test-control.service";
 
 type SkillChangeRecord = Record<string, any>;
 type SkillInstallRecord = Record<string, any>;
@@ -52,7 +54,9 @@ export class AgentSkillsService {
     @Inject(SkillPackageValidator)
     private readonly validator: SkillPackageValidatorPort,
     @Inject(RuntimeReloadClient)
-    private readonly reloadClient: RuntimeReloadClientPort
+    private readonly reloadClient: RuntimeReloadClientPort,
+    @Optional()
+    private readonly testControl?: Gfu29TestControlService
   ) {}
 
   async list(agentId: string) {
@@ -172,6 +176,16 @@ export class AgentSkillsService {
   ): Promise<AgentSkillChangeResult> {
     const agent = await this.findAgent(agentId);
     this.assertAgentReady(agent);
+    const recoveryRequired = await (this.prisma as any).agentSkillChange.findFirst?.({
+      where: { targetAgentId: agentId },
+      orderBy: { createdAt: "desc" }
+    });
+    if (recoveryRequired?.changeStatus === "rollback_failed") {
+      throw new ConflictException({
+        code: "AGENT_SKILL_RECOVERY_REQUIRED",
+        message: "A failed Skills rollback must be recovered before another change"
+      });
+    }
     const source = await (this.prisma as any).agentSkillSource.findUnique({
       where: { id: sourceId }
     });
@@ -357,27 +371,44 @@ export class AgentSkillsService {
     stagedConfigVersion: string,
     previousInstallation: InstallationSnapshot
   ): Promise<AgentSkillChangeResult> {
+    let reload: RuntimeReloadResult;
     try {
-      const reload = await this.reloadClient.reloadSkills(agent, activeConfigVersion);
+      reload = await this.reloadClient.reloadSkills(agent, activeConfigVersion);
       if (reload.reloadStatus === "failed") {
         throw new Error("runtime reload failed");
       }
+    } catch (error) {
+      return this.rollbackAfterReloadFailure(agent, change, previousInstallation, error);
+    }
+
+    const success = {
+      activeConfigVersion,
+      stagedConfigVersion,
+      changeStatus: "succeeded",
+      reloadStatus: reload.reloadStatus,
+      rollbackResult: "not_required",
+      effectiveFor: reload.effectiveFor,
+      finishedAt: new Date()
+    };
+    try {
+      await this.testControl?.beforeSkillAuditFinalize();
       const final = await this.updateChange(change.id, {
-        activeConfigVersion,
-        stagedConfigVersion,
-        changeStatus: "succeeded",
-        reloadStatus: reload.reloadStatus,
+        ...success,
         auditStatus: "audit_written",
-        rollbackResult: "not_required",
-        effectiveFor: reload.effectiveFor,
         failedStage: null,
         errorCode: null,
-        safeErrorSummary: null,
-        finishedAt: new Date()
+        safeErrorSummary: null
       });
       return this.toChangeResult(final);
     } catch (error) {
-      return this.rollbackAfterReloadFailure(agent, change, previousInstallation, error);
+      const final = await this.updateChange(change.id, {
+        ...success,
+        auditStatus: "audit_failed",
+        failedStage: "audit_write",
+        errorCode: "AGENT_SKILL_AUDIT_FAILED",
+        safeErrorSummary: this.safeErrorSummary(error)
+      });
+      return this.toChangeResult(final);
     }
   }
 
@@ -392,6 +423,7 @@ export class AgentSkillsService {
         (await (this.prisma as any).agentSkillChange.findUnique?.({
           where: { id: change.id }
         })) ?? change;
+      await this.testControl?.beforeSkillRollback();
       const rolledBack = await this.workspaces.rollbackSkillsConfig(agent, change.id, latest.previousConfigVersion ?? null);
       await this.restoreInstallation(agent.id, change.skillName, previousInstallation);
       const final = await this.updateChange(change.id, {
@@ -611,7 +643,8 @@ export class AgentSkillsService {
       terminal,
       finishedAt: change.finishedAt ?? null,
       persistedConfigVersion: change.activeConfigVersion ?? null,
-      runtimeLoadedVersion: change.reloadStatus === "loaded" ? change.activeConfigVersion ?? null : null,
+      runtimeLoadedVersion:
+        change.reloadStatus === "loaded" ? change.activeConfigVersion ?? null : change.previousConfigVersion ?? null,
       effectiveFor: "next_task"
     };
   }

@@ -140,6 +140,7 @@ CREATE FUNCTION "gfu29_sync_agent_provider_columns"() RETURNS TRIGGER AS $$
 DECLARE
   requested_provider TEXT;
   resolved_provider TEXT;
+  resolved_provider_active BOOLEAN;
   legacy_only_write BOOLEAN := FALSE;
 BEGIN
   IF TG_OP = 'UPDATE'
@@ -161,12 +162,13 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  SELECT provider."id" INTO resolved_provider
+  SELECT provider."id", provider."isActive" INTO resolved_provider, resolved_provider_active
   FROM "ModelProvider" AS provider
-  WHERE provider."id" = requested_provider
-    AND provider."isActive" = TRUE;
+  WHERE provider."id" = requested_provider;
 
-  IF resolved_provider IS NULL THEN
+  IF FOUND AND NOT resolved_provider_active THEN
+    RAISE EXCEPTION 'GFU-29 Provider reference is unresolved or disabled';
+  ELSIF NOT FOUND THEN
     SELECT provider."id" INTO resolved_provider
     FROM "ModelProvider" AS provider
     WHERE provider."nameKey" = LOWER(requested_provider)

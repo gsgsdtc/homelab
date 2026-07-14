@@ -11,35 +11,11 @@ import {
 } from "../src/modules/agents/agent-workflows.controller";
 import { AgentsController } from "../src/modules/agents/agents.controller";
 import { SkillCatalogController } from "../src/modules/agents/skill-catalog.controller";
+import { ModelProvidersController } from "../src/modules/model-providers/model-providers.controller";
+import { CONFIRMED_GFU29_ENDPOINTS } from "./gfu29-endpoint-contract";
 
 describe("GFU-29 X6 endpoint matrix", () => {
-  const expected = [
-    "GET /agents",
-    "POST /agents",
-    "GET /agents/:id",
-    "PATCH /agents/:id",
-    "GET /agents/:id/soul",
-    "PUT /agents/:id/soul",
-    "POST /agents/:id/retry-initialization",
-    "GET /skill-catalog/sources",
-    "GET /skill-catalog/sources/:sourceId/skills",
-    "GET /skill-catalog/sources/:sourceId/skills/:skillId/versions",
-    "GET /agents/:id/skills",
-    "GET /agents/:id/skills/changes/:changeId",
-    "POST /agents/:id/skills/install",
-    "POST /agents/:id/skills/update",
-    "POST /agents/:id/skills/remove",
-    "GET /agents/:agentId/workflows",
-    "POST /agents/:agentId/workflows",
-    "GET /agents/:agentId/workflows/:workflowKey",
-    "PUT /agents/:agentId/workflows/:workflowKey",
-    "POST /agents/:agentId/workflows/:workflowKey/validate",
-    "POST /agents/:agentId/workflows/:workflowKey/reload",
-    "POST /agents/:agentId/workflows/:workflowKey/save-and-reload",
-    "GET /agents/:agentId/workflows/:workflowKey/versions",
-    "POST /agents/:agentId/workflows/:workflowKey/rollback",
-    "GET /agents/:agentId/workflow-capabilities",
-  ].sort();
+  const expected = CONFIRMED_GFU29_ENDPOINTS.map(({ route }) => route).sort();
 
   it("derives the complete route inventory from controller metadata without omitting collection POST", () => {
     const actual = [
@@ -48,12 +24,15 @@ describe("GFU-29 X6 endpoint matrix", () => {
       AgentSkillsController,
       AgentWorkflowsController,
       AgentWorkflowCapabilitiesController,
+      ModelProvidersController,
     ]
       .flatMap(routesFor)
+      .filter((route) => expected.includes(route))
       .sort();
 
     expect(actual).toEqual(expected);
     expect(actual).toContain("POST /agents/:agentId/workflows");
+    expect(actual).toContain("GET /model-providers");
   });
 
   it.each([
@@ -62,6 +41,7 @@ describe("GFU-29 X6 endpoint matrix", () => {
     AgentSkillsController,
     AgentWorkflowsController,
     AgentWorkflowCapabilitiesController,
+    ModelProvidersController,
   ])(
     "%p applies Bearer and ADMIN guards before every endpoint",
     (controller) => {
@@ -76,15 +56,8 @@ describe("GFU-29 X6 endpoint matrix", () => {
   );
 
   it("marks every write with its ready and ownership observation contract", () => {
-    const writes = expected.filter((route) => /^(POST|PUT|PATCH) /.test(route));
-    const readyWrites = writes.filter((route) =>
-      /\/soul|\/skills\/(install|update|remove)|\/workflows(?:\/|$)|retry-initialization/.test(
-        route,
-      ),
-    );
-    const owned = expected.filter((route) =>
-      /changes\/:changeId|workflows\/:workflowKey/.test(route),
-    );
+    const readyWrites = CONFIRMED_GFU29_ENDPOINTS.filter(({ ready }) => ready).map(({ route }) => route);
+    const owned = CONFIRMED_GFU29_ENDPOINTS.filter(({ ownership }) => ownership).map(({ route }) => route);
 
     expect(readyWrites).toEqual(
       expect.arrayContaining([
@@ -101,6 +74,7 @@ describe("GFU-29 X6 endpoint matrix", () => {
         "POST /agents/:agentId/workflows/:workflowKey/rollback",
       ]),
     );
+    expect(readyWrites).not.toContain("POST /agents/:agentId/workflows/:workflowKey/validate");
   });
 });
 

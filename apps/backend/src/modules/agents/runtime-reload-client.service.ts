@@ -17,7 +17,7 @@ export class RuntimeReloadClient {
   ) {}
 
   async reloadSkills(agent: Pick<Agent, "id" | "workspacePath">, activeConfigVersion: string): Promise<RuntimeReloadResult> {
-    if (this.testControl?.enabled()) return this.testControl.reloadSkills();
+    if (this.testControl?.enabled()) return this.testControl.reloadSkills(activeConfigVersion);
     if (!this.isTestReloadInjectionEnabled()) {
       return { reloadStatus: "pending_restart", effectiveFor: "next_task" };
     }

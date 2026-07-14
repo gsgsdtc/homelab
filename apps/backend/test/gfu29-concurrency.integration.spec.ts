@@ -128,6 +128,40 @@ describe("GFU-29 file and PostgreSQL revision integration", () => {
     expect(row.modelProvider).toBe(row.modelProviderId);
   });
 
+  it("serializes Agent PATCH and Soul PUT on the same persistent cross-instance lock", async () => {
+    const before = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } });
+    const barriers = crossResourceBarrierPair(`agent:${agentId}`);
+    const first = agentService(prisma, workspaces, barriers.first);
+    const second = agentService(prismaSecond, secondWorkspaces, barriers.second);
+    const patch = first.update(agentId, {
+      name: "Cross-resource Agent winner",
+      expectedRevision: before.revision
+    });
+    await barriers.firstAcquired;
+    const soul = second.saveSoul(agentId, {
+      content: "# Cross-resource Soul v2\n",
+      expectedRevision: before.soulRevision
+    });
+    const attemptedResource = await barriers.secondAttempted;
+    barriers.releaseFirst();
+    const results = await Promise.allSettled([patch, soul]);
+
+    expect(attemptedResource).toBe(`agent:${agentId}`);
+    expect(barriers.events).toEqual([
+      `first-acquired:agent:${agentId}`,
+      `second-attempted:agent:${agentId}`,
+      `second-acquired:agent:${agentId}`
+    ]);
+    expect(results.every((item) => item.status === "fulfilled")).toBe(true);
+
+    const row = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } });
+    const soulFile = await readFile(join(repoRoot, row.workspacePath, "soul.md"), "utf8");
+    expect(row.name).toBe("Cross-resource Agent winner");
+    expect(row.soul).toBe("# Cross-resource Soul v2\n");
+    expect(row.soulRevision).toBe(before.soulRevision + 1);
+    expect(sha(soulFile)).toBe(sha(row.soul));
+  });
+
   it("replays the X1 failed workspace fixture with one accepted concurrent retry and no sentinel overwrite", async () => {
     const x1Id = "x1-concurrency-agent-87654321";
     const descriptor = workspaces.buildDescriptor("x1-concurrency-agent", x1Id);
@@ -258,12 +292,13 @@ describe("GFU-29 file and PostgreSQL revision integration", () => {
   });
 
   it("allows exactly one same-revision Soul save and keeps file hash equal to DB", async () => {
-    const barriers = commitBarrierPair(`soul:${agentId}`);
+    const before = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } });
+    const barriers = commitBarrierPair(`agent:${agentId}`);
     const first = agentService(prisma, workspaces, barriers.first);
     const second = agentService(prismaSecond, secondWorkspaces, barriers.second);
-    const firstSave = first.saveSoul(agentId, { content: "# Soul A\n", expectedRevision: 1 });
+    const firstSave = first.saveSoul(agentId, { content: "# Soul A\n", expectedRevision: before.soulRevision });
     await barriers.firstAcquired;
-    const secondSave = second.saveSoul(agentId, { content: "# Soul B\n", expectedRevision: 1 });
+    const secondSave = second.saveSoul(agentId, { content: "# Soul B\n", expectedRevision: before.soulRevision });
     await barriers.secondAttempted;
     expect(barriers.events).toEqual(["first-acquired", "second-attempted"]);
     barriers.releaseFirst();
@@ -283,15 +318,16 @@ describe("GFU-29 file and PostgreSQL revision integration", () => {
       join(repoRoot, row.workspacePath, "soul.md"),
       "utf8",
     );
-    expect(row.soulRevision).toBe(2);
+    expect(row.soulRevision).toBe(before.soulRevision + 1);
     expect(sha(file)).toBe(sha(row.soul));
   });
 
   it("keeps an X3 held run on Soul v1 while a new run reads Soul v2", async () => {
     const heldRunSoul = await agents.loadSoulForRun(agentId);
+    const before = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } });
     await agents.saveSoul(agentId, {
       content: "# Soul after barrier\n",
-      expectedRevision: 2,
+      expectedRevision: before.soulRevision,
     });
     const newRunSoul = await agents.loadSoulForRun(agentId);
 
@@ -471,9 +507,47 @@ function commitBarrierPair(resource: string) {
   };
 }
 
+function crossResourceBarrierPair(firstResource: string) {
+  const firstAcquired = deferred();
+  const secondAttempted = deferredValue<string>();
+  const release = deferred();
+  const events: string[] = [];
+  return {
+    events,
+    firstAcquired: firstAcquired.promise,
+    secondAttempted: secondAttempted.promise,
+    releaseFirst: release.resolve,
+    first: {
+      async afterLock(resource: string) {
+        if (resource !== firstResource) return;
+        events.push(`first-acquired:${resource}`);
+        firstAcquired.resolve();
+        await release.promise;
+      }
+    } satisfies CommitBarrier,
+    second: {
+      async beforeLock(resource: string) {
+        events.push(`second-attempted:${resource}`);
+        secondAttempted.resolve(resource);
+      },
+      async afterLock(resource: string) {
+        events.push(`second-acquired:${resource}`);
+      }
+    } satisfies CommitBarrier
+  };
+}
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function deferredValue<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
     resolve = done;
   });
   return { promise, resolve };

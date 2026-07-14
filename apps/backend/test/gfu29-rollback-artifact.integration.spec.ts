@@ -106,6 +106,55 @@ describe("GFU-29 real application rollback artifact", () => {
     const token = (await login.json() as { accessToken: string }).accessToken;
     const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
 
+    const disabledCollisionId = "rollback-disabled-id";
+    await prisma.modelProvider.createMany({
+      data: [
+        {
+          id: disabledCollisionId,
+          name: "Rollback Disabled ID",
+          nameKey: "rollback-disabled-provider",
+          baseUrl: "https://disabled.invalid/v1",
+          encryptedApiKey: "fixture",
+          defaultModel: "disabled-model",
+          isActive: false
+        },
+        {
+          id: "rollback-active-name-collision",
+          name: "Rollback Active Name Collision",
+          nameKey: disabledCollisionId,
+          baseUrl: "https://active.invalid/v1",
+          encryptedApiKey: "fixture",
+          defaultModel: "active-model",
+          isActive: true
+        }
+      ]
+    });
+
+    const beforeRejectedUpdate = await prisma.agent.findUniqueOrThrow({ where: { id: createdByPrimary.id } });
+    const rejectedUpdate = await fetch(`http://127.0.0.1:${port}/agents/${createdByPrimary.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ name: "Must Not Persist", modelProvider: disabledCollisionId })
+    });
+    expect(rejectedUpdate.status).toBeGreaterThanOrEqual(400);
+    await expect(prisma.agent.findUniqueOrThrow({ where: { id: createdByPrimary.id } })).resolves.toMatchObject({
+      name: beforeRejectedUpdate.name,
+      revision: beforeRejectedUpdate.revision,
+      modelProvider: beforeRejectedUpdate.modelProvider,
+      modelProviderId: beforeRejectedUpdate.modelProviderId
+    });
+    await expect(readFile(join(repoRoot, beforeRejectedUpdate.workspacePath, "agent.yaml"), "utf8")).resolves.toContain(
+      `provider: "${beforeRejectedUpdate.modelProviderId}"`
+    );
+
+    const rejectedCreate = await fetch(`http://127.0.0.1:${port}/agents`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "Must Not Create", slug: "must-not-create-disabled-id", modelProvider: disabledCollisionId })
+    });
+    expect(rejectedCreate.status).toBeGreaterThanOrEqual(400);
+    await expect(prisma.agent.count({ where: { slug: "must-not-create-disabled-id" } })).resolves.toBe(0);
+
     expect((await fetch(`http://127.0.0.1:${port}/agents/${createdByPrimary.id}`, { headers })).status).toBe(200);
     const oldUpdate = await fetch(`http://127.0.0.1:${port}/agents/${createdByPrimary.id}`, {
       method: "PATCH",

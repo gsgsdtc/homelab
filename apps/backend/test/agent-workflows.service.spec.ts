@@ -110,6 +110,19 @@ describe("AgentWorkflowsService", () => {
     expect(prisma.agentWorkflow.upsert).not.toHaveBeenCalled();
   });
 
+  it("keeps Workflow validate read-like for an owned workflow on a non-ready Agent", async () => {
+    prisma.agent.findUnique.mockResolvedValue(agent({ status: "initializing" }));
+    prisma.agentWorkflow.findFirst.mockResolvedValue(workflow());
+    const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
+
+    await expect(
+      service.validate("agent-1", "support-triage", {
+        source: validSource("support-triage")
+      })
+    ).resolves.toMatchObject({ workflowKey: "support-triage", valid: true });
+    expect(workspaces.writeWorkflowSource).not.toHaveBeenCalled();
+  });
+
   it("validates only a workflow owned by the Agent in the request path", async () => {
     prisma.agentWorkflow.findFirst.mockResolvedValue(null);
     const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);

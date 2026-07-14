@@ -54,17 +54,36 @@ export class Gfu29TestControlService {
     }
   }
 
-  async reloadSkills(): Promise<{ reloadStatus: "pending_restart" | "runtime_offline"; effectiveFor: "next_task" }> {
+  async reloadSkills(activeConfigVersion?: string): Promise<{
+    reloadStatus: "loaded" | "failed" | "pending_restart" | "runtime_offline";
+    effectiveFor: "next_task";
+  }> {
     if (!this.enabled()) return { reloadStatus: "pending_restart", effectiveFor: "next_task" };
     await this.waitForClockAdvance(1_000);
-    const scenarioName = this.config.get<string>("GFU29_SKILL_SCENARIO", "pending_restart");
-    const scenario = (await this.read()).adapter.skillScenarios[scenarioName];
-    if (!scenario) throw new Error("unknown GFU-29 skill scenario");
-    if (scenario.reloadStatus === "failed") throw new Error("fixture runtime reload failed");
+    const row = await this.read();
+    const scenario = this.skillScenarioFrom(row.adapter);
+    if (scenario.reloadStatus === "loaded") {
+      row.adapter.runtimeLoadedVersion = activeConfigVersion ?? null;
+      await this.write(row.adapter);
+    }
     return {
-      reloadStatus: scenario.reloadStatus === "runtime_offline" ? "runtime_offline" : "pending_restart",
+      reloadStatus: scenario.reloadStatus,
       effectiveFor: "next_task"
     };
+  }
+
+  async beforeSkillRollback(): Promise<void> {
+    if (!this.enabled()) return;
+    if ((await this.activeSkillScenario()).rollback === "failed") {
+      throw new Error("fixture skills rollback failed");
+    }
+  }
+
+  async beforeSkillAuditFinalize(): Promise<void> {
+    if (!this.enabled()) return;
+    if ((await this.activeSkillScenario()).auditStatus === "audit_failed") {
+      throw new Error("fixture skills audit finalize failed");
+    }
   }
 
   private async waitAtBarrier(barrierId: string, observation: Record<string, unknown>): Promise<void> {
@@ -78,6 +97,18 @@ export class Gfu29TestControlService {
       if (current.adapter.barriers[barrierId]?.barrierState === "released") return;
       await this.pollTurn();
     }
+  }
+
+  private async activeSkillScenario(): Promise<any> {
+    const adapter = (await this.read()).adapter;
+    return this.skillScenarioFrom(adapter);
+  }
+
+  private skillScenarioFrom(adapter: any): any {
+    const name = adapter.activeSkillScenario ?? "pending_restart";
+    const scenario = adapter.skillScenarios[name];
+    if (!scenario) throw new Error("unknown GFU-29 skill scenario");
+    return scenario;
   }
 
   private async read(): Promise<ControlRow> {

@@ -277,7 +277,7 @@ export class AgentsService {
         message: "expectedRevision is required"
       });
     }
-    return this.withCommit(`soul:${id}`, (tx) => this.saveSoulLocked(tx, id, dto));
+    return this.withCommit(`agent:${id}`, (tx) => this.saveSoulLocked(tx, id, dto));
   }
 
   private async saveSoulLocked(tx: Prisma.TransactionClient, id: string, dto: SaveAgentSoulDto) {

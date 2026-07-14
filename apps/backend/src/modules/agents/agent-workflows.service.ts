@@ -63,7 +63,7 @@ export class AgentWorkflowsService {
   }
 
   async validate(agentId: string, workflowKey: string, dto: WorkflowContentDto) {
-    await this.findReadyAgent(agentId);
+    await this.findAgent(agentId);
     await this.findWorkflow(agentId, workflowKey);
     const extension = dto.extension ?? "ts";
     this.assertSourceSize(dto.source);

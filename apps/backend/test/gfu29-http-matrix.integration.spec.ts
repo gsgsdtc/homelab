@@ -13,6 +13,7 @@ import { AgentWorkflowSnapshotService } from "../src/modules/agents/agent-workfl
 import { RuntimeReloadClient } from "../src/modules/agents/runtime-reload-client.service";
 import { PrismaService } from "../src/modules/prisma/prisma.service";
 import { ModelProviderCredentialsService } from "../src/modules/model-providers/model-provider-credentials.service";
+import { CONFIRMED_GFU29_ENDPOINTS } from "./gfu29-endpoint-contract";
 
 describe("GFU-29 X6 HTTP authentication and ready matrix", () => {
   jest.setTimeout(120_000);
@@ -271,20 +272,24 @@ describe("GFU-29 X6 HTTP authentication and ready matrix", () => {
     "returns 409 with zero side effects for every F5/F6/F7 write on %s",
     async (resourceKey) => {
       const agentId = seed.resources[resourceKey];
+      await prisma.agentWorkflow.upsert({
+        where: { agentId_workflowKey: { agentId, workflowKey: "flow" } },
+        create: {
+          agentId,
+          workflowKey: "flow",
+          relativePath: `.homelab/agents/${agentId}/src/mastra/workflows/flow.ts`,
+          draftHash: "non-ready-draft",
+          revision: "non-ready-draft",
+          editRevision: 1,
+          reloadStatus: "draft"
+        },
+        update: {}
+      });
       const before = await sideEffectSnapshot(agentId);
-      const writes = [
-        ["PUT", `/agents/${agentId}/soul`, { content: "# forbidden\n", expectedRevision: 1 }],
-        ["POST", `/agents/${agentId}/skills/install`, skillBody("1.0.0")],
-        ["POST", `/agents/${agentId}/skills/update`, skillBody("1.1.0")],
-        ["POST", `/agents/${agentId}/skills/remove`, { skillName: "http-skill" }],
-        ["POST", `/agents/${agentId}/workflows`, { workflowKey: "forbidden-flow", source: workflowSource("forbidden-flow") }],
-        ["PUT", `/agents/${agentId}/workflows/fixture-flow`, { source: workflowSource("fixture-flow"), expectedRevision: 1 }],
-        ["POST", `/agents/${agentId}/workflows/fixture-flow/validate`, { source: workflowSource("fixture-flow") }],
-        ["POST", `/agents/${agentId}/workflows/fixture-flow/reload`, {}],
-        ["POST", `/agents/${agentId}/workflows/fixture-flow/save-and-reload`, { source: workflowSource("fixture-flow"), expectedRevision: 1 }],
-        ["POST", `/agents/${agentId}/workflows/fixture-flow/rollback`, { versionId: "missing-version" }]
-      ] as Array<[string, string, Record<string, unknown>]>;
-      for (const [method, path, body] of writes) {
+      const writes = CONFIRMED_GFU29_ENDPOINTS.filter(({ ready }) => ready);
+      for (const { method, route, path: buildPath } of writes) {
+        const path = buildPath(agentId);
+        const body = readyWriteBody(route);
         const response = await fetch(`${baseUrl}${path}`, { method, headers: authHeaders(adminToken), body: JSON.stringify(body) });
         const responseBody = await response.json();
         if (response.status !== 409) throw new Error(`${method} ${path} returned ${response.status}: ${JSON.stringify(responseBody)}`);
@@ -293,6 +298,15 @@ describe("GFU-29 X6 HTTP authentication and ready matrix", () => {
           responseBody: { code: "AGENT_NOT_READY" }
         });
       }
+      await expect(sideEffectSnapshot(agentId)).resolves.toEqual(before);
+
+      const validate = await fetch(`${baseUrl}/agents/${agentId}/workflows/flow/validate`, {
+        method: "POST",
+        headers: authHeaders(adminToken),
+        body: JSON.stringify({ source: workflowSource("flow") })
+      });
+      expect(validate.status).toBe(201);
+      await expect(validate.json()).resolves.toMatchObject({ workflowKey: "flow", valid: true });
       await expect(sideEffectSnapshot(agentId)).resolves.toEqual(before);
     }
   );
@@ -348,6 +362,7 @@ describe("GFU-29 X6 HTTP authentication and ready matrix", () => {
     };
 
     await call("GET /agents", "/agents");
+    await call("GET /model-providers", "/model-providers");
     await call("POST /agents", "/agents", {
       method: "POST",
       headers: { "idempotency-key": "http-ready-matrix-create" },
@@ -428,7 +443,7 @@ describe("GFU-29 X6 HTTP authentication and ready matrix", () => {
     });
     await call("GET /agents/:agentId/workflow-capabilities", `/agents/${readyAgentId}/workflow-capabilities`);
 
-    expect([...covered].sort()).toEqual(endpointInventory().sort());
+    expect([...covered].sort()).toEqual(CONFIRMED_GFU29_ENDPOINTS.map(({ route }) => route).sort());
   });
 
   async function request(
@@ -505,63 +520,19 @@ describe("GFU-29 X6 HTTP authentication and ready matrix", () => {
 });
 
 function endpoints(agentId: string) {
-  return [
-    ["GET", "/agents"],
-    ["POST", "/agents"],
-    ["GET", `/agents/${agentId}`],
-    ["PATCH", `/agents/${agentId}`],
-    ["GET", `/agents/${agentId}/soul`],
-    ["PUT", `/agents/${agentId}/soul`],
-    ["POST", `/agents/${agentId}/retry-initialization`],
-    ["GET", "/skill-catalog/sources"],
-    ["GET", "/skill-catalog/sources/source/skills"],
-    ["GET", "/skill-catalog/sources/source/skills/skill/versions"],
-    ["GET", `/agents/${agentId}/skills`],
-    ["GET", `/agents/${agentId}/skills/changes/change`],
-    ["POST", `/agents/${agentId}/skills/install`],
-    ["POST", `/agents/${agentId}/skills/update`],
-    ["POST", `/agents/${agentId}/skills/remove`],
-    ["GET", `/agents/${agentId}/workflows`],
-    ["POST", `/agents/${agentId}/workflows`],
-    ["GET", `/agents/${agentId}/workflows/flow`],
-    ["PUT", `/agents/${agentId}/workflows/flow`],
-    ["POST", `/agents/${agentId}/workflows/flow/validate`],
-    ["POST", `/agents/${agentId}/workflows/flow/reload`],
-    ["POST", `/agents/${agentId}/workflows/flow/save-and-reload`],
-    ["GET", `/agents/${agentId}/workflows/flow/versions`],
-    ["POST", `/agents/${agentId}/workflows/flow/rollback`],
-    ["GET", `/agents/${agentId}/workflow-capabilities`],
-  ].map(([method, path]) => ({ method, path }));
+  return CONFIRMED_GFU29_ENDPOINTS.map(({ method, path }) => ({ method, path: path(agentId) }));
 }
 
-function endpointInventory() {
-  return [
-    "GET /agents",
-    "POST /agents",
-    "GET /agents/:id",
-    "PATCH /agents/:id",
-    "GET /agents/:id/soul",
-    "PUT /agents/:id/soul",
-    "POST /agents/:id/retry-initialization",
-    "GET /skill-catalog/sources",
-    "GET /skill-catalog/sources/:sourceId/skills",
-    "GET /skill-catalog/sources/:sourceId/skills/:skillId/versions",
-    "GET /agents/:id/skills",
-    "GET /agents/:id/skills/changes/:changeId",
-    "POST /agents/:id/skills/install",
-    "POST /agents/:id/skills/update",
-    "POST /agents/:id/skills/remove",
-    "GET /agents/:agentId/workflows",
-    "POST /agents/:agentId/workflows",
-    "GET /agents/:agentId/workflows/:workflowKey",
-    "PUT /agents/:agentId/workflows/:workflowKey",
-    "POST /agents/:agentId/workflows/:workflowKey/validate",
-    "POST /agents/:agentId/workflows/:workflowKey/reload",
-    "POST /agents/:agentId/workflows/:workflowKey/save-and-reload",
-    "GET /agents/:agentId/workflows/:workflowKey/versions",
-    "POST /agents/:agentId/workflows/:workflowKey/rollback",
-    "GET /agents/:agentId/workflow-capabilities"
-  ];
+function readyWriteBody(route: string): Record<string, unknown> {
+  if (route === "PUT /agents/:id/soul") return { content: "# forbidden\n", expectedRevision: 1 };
+  if (route.endsWith("/skills/install")) return skillBody("1.0.0");
+  if (route.endsWith("/skills/update")) return skillBody("1.1.0");
+  if (route.endsWith("/skills/remove")) return { skillName: "http-skill" };
+  if (route === "POST /agents/:agentId/workflows") return { workflowKey: "forbidden-flow", source: workflowSource("forbidden-flow") };
+  if (route === "PUT /agents/:agentId/workflows/:workflowKey") return { source: workflowSource("flow"), expectedRevision: 1 };
+  if (route.endsWith("/save-and-reload")) return { source: workflowSource("flow"), expectedRevision: 1 };
+  if (route.endsWith("/rollback")) return { versionId: "missing-version" };
+  return {};
 }
 
 function authHeaders(token: string) {

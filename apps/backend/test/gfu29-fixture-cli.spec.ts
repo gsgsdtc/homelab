@@ -83,6 +83,22 @@ describe("GFU-29 deterministic fixture CLI", () => {
     });
 
     expect(
+      run([
+        "--suite",
+        "GFU-29",
+        "--action",
+        "set-skill-scenario",
+        "--test-run-id",
+        seed.testRunId,
+        "--scenario",
+        "rollback_failed"
+      ])
+    ).toMatchObject({ status: "ready", activeSkillScenario: "rollback_failed" });
+    expect(run(["--suite", "GFU-29", "--action", "observe", "--test-run-id", seed.testRunId])).toMatchObject({
+      adapter: { activeSkillScenario: "rollback_failed" }
+    });
+
+    expect(
       run(["--suite", "GFU-29", "--action", "barrier", "--test-run-id", seed.testRunId, "--barrier-id", "RUN-SOUL-V1-HELD", "--operation", "release"])
     ).toMatchObject({ acknowledged: true, barrierState: "released" });
     expect(run(["--suite", "GFU-29", "--action", "advance-clock", "--test-run-id", seed.testRunId, "--milliseconds", "30000"])).toMatchObject({

@@ -46,6 +46,7 @@ async function main() {
   else if (args.action === "teardown") output(await teardown());
   else if (args.action === "advance-clock") output(await advanceClock());
   else if (args.action === "barrier") output(await barrier());
+  else if (args.action === "set-skill-scenario") output(await setSkillScenario());
   else if (args.action === "observe") output(await observe());
   else fail("INVALID_FIXTURE_ACTION", "unsupported --action");
 }
@@ -139,6 +140,21 @@ async function barrier() {
     barrierId,
     acknowledged: true,
     barrierState: item.barrierState,
+  };
+}
+
+async function setSkillScenario() {
+  const state = loadState(required("test-run-id"));
+  const scenario = required("scenario");
+  const adapter = await loadAdapter(state);
+  if (!adapter.skillScenarios[scenario])
+    fail("FIXTURE_SKILL_SCENARIO_NOT_FOUND", "skill scenario was not found");
+  adapter.activeSkillScenario = scenario;
+  await writeAdapter(state, adapter);
+  return {
+    status: "ready",
+    testRunId: state.testRunId,
+    activeSkillScenario: scenario,
   };
 }
 
@@ -343,6 +359,8 @@ function seedWorkspace(state) {
 async function seedFakeAdapter(state) {
   const adapter = {
     clockMillis: 0,
+    activeSkillScenario: "pending_restart",
+    runtimeLoadedVersion: null,
     barriers: {
       "RUN-SOUL-V1-HELD": {
         runId: `run-${state.testRunId}`,
