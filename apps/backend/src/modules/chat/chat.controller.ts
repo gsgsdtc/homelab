@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Post, Res, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Param, Post, Res, UseFilters, UseGuards } from "@nestjs/common";
 import { UserRole } from "@prisma/client";
 import { Response } from "express";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
@@ -7,11 +7,13 @@ import { RolesGuard } from "../../common/guards/roles.guard";
 import { JwtUser } from "../../common/types/jwt-user";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { ChatTestControlService } from "../chat-test-control/chat-test-control.service";
+import { ChatApiExceptionFilter } from "./chat-api-exception.filter";
 import { ChatSessionService } from "./chat-session.service";
 import { ChatMessageDto } from "./dto/chat-message.dto";
 
 @Controller("agents/:agentId/chat")
 @UseGuards(JwtAuthGuard, RolesGuard)
+@UseFilters(ChatApiExceptionFilter)
 @Roles(UserRole.ADMIN)
 export class ChatController {
   constructor(
