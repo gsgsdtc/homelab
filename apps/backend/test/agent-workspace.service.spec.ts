@@ -268,4 +268,55 @@ describe("AgentWorkspaceService", () => {
     ).rejects.toThrow("workspace file has user edits: soul.md");
     await expect(readFile(join(descriptor.workspacePath, "soul.md"), "utf8")).resolves.toBe("User edited soul.\n");
   });
+
+  it("writes Mastra workflow source only to the controlled workspace path", async () => {
+    const descriptor = service.buildDescriptor("ops-agent", "12345678-abcd");
+    const agent = {
+      id: "12345678-abcd",
+      name: "Ops Agent",
+      slug: "ops-agent",
+      workspaceName: descriptor.workspaceName,
+      workspacePath: descriptor.relativeWorkspacePath,
+      modelProvider: null,
+      modelSecretRef: null,
+      soul: ""
+    };
+    await service.initializeWorkspace(agent, { allowExistingWorkspace: false });
+
+    const result = await service.writeWorkflowSource(
+      agent,
+      "support-triage",
+      "ts",
+      "export default workflow;\n"
+    );
+
+    expect(result.relativePath).toBe(
+      ".homelab/agents/ops-agent--12345678/src/mastra/workflows/support-triage.ts"
+    );
+    await expect(
+      readFile(join(descriptor.workspacePath, "src", "mastra", "workflows", "support-triage.ts"), "utf8")
+    ).resolves.toBe("export default workflow;\n");
+  });
+
+  it("rejects workflow source keys that could escape the controlled path", async () => {
+    const descriptor = service.buildDescriptor("ops-agent", "12345678-abcd");
+    const agent = {
+      id: "12345678-abcd",
+      name: "Ops Agent",
+      slug: "ops-agent",
+      workspaceName: descriptor.workspaceName,
+      workspacePath: descriptor.relativeWorkspacePath,
+      modelProvider: null,
+      modelSecretRef: null,
+      soul: ""
+    };
+    await service.initializeWorkspace(agent, { allowExistingWorkspace: false });
+
+    await expect(service.writeWorkflowSource(agent, "../escape", "ts", "export default workflow;\n")).rejects.toThrow(
+      "workflow key contains unsafe characters"
+    );
+    await expect(
+      readFile(join(repoRoot, ".homelab", "agents", "escape.ts"), "utf8")
+    ).rejects.toThrow();
+  });
 });
