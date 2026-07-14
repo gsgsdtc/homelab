@@ -125,6 +125,24 @@ describe("AgentWorkflowValidator", () => {
     }
   });
 
+  it("rejects env aliasing, destructuring, process bracket env access, and nonliteral env keys", () => {
+    for (const prefix of [
+      "const env = process.env;\nconst key = env.AWS_SECRET_ACCESS_KEY;",
+      "const { AWS_SECRET_ACCESS_KEY } = process.env;",
+      'const key = process["env"].AWS_SECRET_ACCESS_KEY;',
+      "const envName = 'WORKFLOW_REGION';\nconst region = process.env[envName];",
+      "const allEnvKeys = Object.keys(process.env);"
+    ]) {
+      expect(() =>
+        validator.validateSource({
+          workflowKey: "support-triage",
+          extension: "ts",
+          source: `${prefix}\n${sourceFor("support-triage")}`
+        })
+      ).toThrow(BadRequestException);
+    }
+  });
+
   it("allows secretRef identifiers but rejects common raw secret shapes", () => {
     expect(() =>
       validator.validateSource({

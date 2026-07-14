@@ -102,17 +102,56 @@ export class AgentWorkflowValidator {
 
   private validateEnvironmentAccess(source: string): void {
     const allowedEnvNames = new Set(this.configList("HOMELAB_WORKFLOW_ALLOWED_ENV"));
-    const envNames = new Set<string>();
-    for (const match of source.matchAll(/\bprocess\s*\.\s*env\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)/g)) {
-      envNames.add(match[1]);
-    }
-    for (const match of source.matchAll(/\bprocess\s*\.\s*env\s*\[\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\]/g)) {
-      envNames.add(match[1]);
-    }
-    for (const envName of envNames) {
-      if (!allowedEnvNames.has(envName)) {
-        throw new BadRequestException(`workflow env variable is not allowlisted: ${envName}`);
+    const sourceFile = ts.createSourceFile("workflow.ts", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
+    const visit = (node: ts.Node) => {
+      if (ts.isPropertyAccessExpression(node) && this.isProcessEnvDotAccess(node.expression)) {
+        this.assertAllowedEnvName(node.name.text, allowedEnvNames);
+        return;
       }
+      if (ts.isElementAccessExpression(node) && this.isProcessEnvDotAccess(node.expression)) {
+        const envName = this.literalText(node.argumentExpression);
+        if (!envName) {
+          throw new BadRequestException("workflow env access must use a literal env name");
+        }
+        this.assertAllowedEnvName(envName, allowedEnvNames);
+        return;
+      }
+      if (this.isProcessEnvDotAccess(node) || this.isProcessEnvElementAccess(node)) {
+        throw new BadRequestException("workflow env access must directly read an allowlisted env name");
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+
+  private isProcessEnvDotAccess(node: ts.Node): node is ts.PropertyAccessExpression {
+    return (
+      ts.isPropertyAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "process" &&
+      node.name.text === "env"
+    );
+  }
+
+  private isProcessEnvElementAccess(node: ts.Node): node is ts.ElementAccessExpression {
+    return (
+      ts.isElementAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "process" &&
+      this.literalText(node.argumentExpression) === "env"
+    );
+  }
+
+  private literalText(node: ts.Expression | undefined): string | null {
+    if (node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))) {
+      return node.text;
+    }
+    return null;
+  }
+
+  private assertAllowedEnvName(envName: string, allowedEnvNames: Set<string>): void {
+    if (!allowedEnvNames.has(envName)) {
+      throw new BadRequestException(`workflow env variable is not allowlisted: ${envName}`);
     }
   }
 
