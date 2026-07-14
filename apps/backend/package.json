@@ -11,6 +11,8 @@
     "pretest": "prisma generate",
     "test": "jest --runInBand",
     "e2e:fixture": "node scripts/gfu29-fixture.cjs",
+    "provider:migration:preflight": "node scripts/gfu29-provider-migration.cjs --action preflight",
+    "provider:migration:validate": "node scripts/gfu29-provider-migration.cjs --action validate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy"

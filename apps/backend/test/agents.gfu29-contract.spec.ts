@@ -41,7 +41,8 @@ describe("GFU-29 Agent backend contract", () => {
     getGitStatus: jest.fn(() => "clean"),
     readSoul: jest.fn(),
     writeSoul: jest.fn(),
-    deleteSoul: jest.fn()
+    deleteSoul: jest.fn(),
+    syncWorkspace: jest.fn()
   };
   const providers: any = { resolveProviderForAgent: jest.fn() };
 
@@ -113,6 +114,28 @@ describe("GFU-29 Agent backend contract", () => {
     expect(prisma.agent.updateMany).not.toHaveBeenCalled();
   });
 
+  it("requires Agent revision on every update", async () => {
+    prisma.agent.findUnique.mockResolvedValue(agent());
+    const service = new AgentsService(prisma, workspaces, providers);
+
+    await expect(service.update("agent-1", { name: "Changed" } as any)).rejects.toMatchObject({
+      response: expect.objectContaining({ code: "REVISION_REQUIRED" })
+    });
+    expect(prisma.agent.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("restores generated files when the Agent CAS database commit fails", async () => {
+    const previous = agent();
+    prisma.agent.findUnique.mockResolvedValue(previous);
+    prisma.agent.updateMany.mockRejectedValueOnce(new Error("database unavailable"));
+    const service = new AgentsService(prisma, workspaces, providers);
+
+    await expect(service.update("agent-1", { name: "Changed", expectedRevision: 7 })).rejects.toThrow("database unavailable");
+
+    expect(workspaces.syncWorkspace).toHaveBeenNthCalledWith(1, expect.objectContaining({ name: "Changed", revision: 8 }), previous);
+    expect(workspaces.syncWorkspace).toHaveBeenNthCalledWith(2, previous, expect.objectContaining({ name: "Changed", revision: 8 }));
+  });
+
   it("enforces ready, byte and Soul revision gates before writing", async () => {
     prisma.agent.findUnique.mockResolvedValue(agent());
     workspaces.readSoul.mockResolvedValue({ content: "old", status: "loaded" });
@@ -125,6 +148,15 @@ describe("GFU-29 Agent backend contract", () => {
       })
     ).rejects.toMatchObject({
       response: expect.objectContaining({ code: "SOUL_TOO_LARGE" })
+    });
+    expect(workspaces.writeSoul).not.toHaveBeenCalled();
+  });
+
+  it("requires Soul revision on every save", async () => {
+    const service = new AgentsService(prisma, workspaces, providers);
+
+    await expect(service.saveSoul("agent-1", { content: "# Updated\n" } as any)).rejects.toMatchObject({
+      response: expect.objectContaining({ code: "SOUL_REVISION_REQUIRED" })
     });
     expect(workspaces.writeSoul).not.toHaveBeenCalled();
   });

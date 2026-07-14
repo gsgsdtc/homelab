@@ -35,7 +35,9 @@ describe("AgentWorkspaceService", () => {
       { allowExistingWorkspace: false }
     );
 
-    await expect(readFile(join(descriptor.workspacePath, "agent.yaml"), "utf8")).resolves.toContain('providerId: "openai"');
+    const agentYaml = await readFile(join(descriptor.workspacePath, "agent.yaml"), "utf8");
+    expect(agentYaml).toContain('provider: "openai"');
+    expect(agentYaml).not.toContain("providerId:");
     await expect(readFile(join(descriptor.workspacePath, "soul.md"), "utf8")).resolves.toBe("Keep production stable.");
     await expect(readFile(join(descriptor.workspacePath, "skills", "skills.yaml"), "utf8")).resolves.toBe("skills: []\n");
     await expect(readFile(join(descriptor.workspacePath, "workflows", "workflow.yaml"), "utf8")).resolves.toBe("workflows: []\n");
@@ -43,6 +45,38 @@ describe("AgentWorkspaceService", () => {
       "Provider credentials are managed only by the backend Provider store"
     );
     await expect(readFile(join(repoRoot, ".homelab", "agents", ".gitignore"), "utf8")).resolves.toBe("**/.env\n**/.env.*\n**/*.secret\n**/secrets.local.*\n");
+  });
+
+  it("keeps agent.yaml writable by the legacy rollback target during the compatibility window", async () => {
+    const descriptor = service.buildDescriptor("ops-agent", "12345678-abcd");
+    const created = {
+      id: "12345678-abcd",
+      name: "Ops Agent",
+      slug: "ops-agent",
+      workspaceName: descriptor.workspaceName,
+      workspacePath: descriptor.relativeWorkspacePath,
+      modelProviderId: "provider-v2",
+      modelProvider: "provider-v2",
+      modelSecretRef: null,
+      soul: "Initial soul."
+    };
+    await service.initializeWorkspace(created, {
+      allowExistingWorkspace: false
+    });
+
+    const legacyYaml = await readFile(join(descriptor.workspacePath, "agent.yaml"), "utf8");
+    expect(legacyYaml).toContain('provider: "provider-v2"');
+    expect(legacyYaml).not.toContain("providerId:");
+
+    const updated = {
+      ...created,
+      name: "Ops Agent Updated",
+      modelProviderId: "provider-v3",
+      modelProvider: "provider-v3"
+    };
+    await service.syncWorkspace(updated, created);
+
+    await expect(readFile(join(descriptor.workspacePath, "agent.yaml"), "utf8")).resolves.toContain('provider: "provider-v3"');
   });
 
   it("keeps soul and workflow workspace capabilities available after baseline integration", async () => {
@@ -340,7 +374,7 @@ describe("AgentWorkspaceService", () => {
 
     const agentYaml = await readFile(join(descriptor.workspacePath, "agent.yaml"), "utf8");
     expect(agentYaml).toContain('name: "Ops Agent Updated"');
-    expect(agentYaml).toContain('providerId: "anthropic"');
+    expect(agentYaml).toContain('provider: "anthropic"');
     expect(agentYaml).not.toContain("secretRef");
     await expect(readFile(join(descriptor.workspacePath, "soul.md"), "utf8")).resolves.toBe("Updated soul.");
   });

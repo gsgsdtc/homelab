@@ -25,24 +25,31 @@ describe("AgentWorkflowsController", () => {
     const result = await controller.saveAndReload("agent-1", "support-triage", {
       source: "export default workflow;",
       extension: "ts",
-      expectedRevision: "draft-v1"
+      expectedRevision: 1
     });
 
     expect(service.saveAndReload).toHaveBeenCalledWith("agent-1", "support-triage", {
       source: "export default workflow;",
       extension: "ts",
-      expectedRevision: "draft-v1"
+      expectedRevision: 1
     });
-    expect(result).toMatchObject({ workflowKey: "support-triage", reloadStatus: "succeeded" });
+    expect(result).toMatchObject({
+      workflowKey: "support-triage",
+      reloadStatus: "succeeded"
+    });
   });
 
   it("routes rollback to the workflow service", async () => {
     service.rollback.mockResolvedValue(response({ workflowKey: "support-triage", activeHash: "active-v1" }));
     const controller = new AgentWorkflowsController(service);
 
-    await controller.rollback("agent-1", "support-triage", { versionId: "version-1" });
+    await controller.rollback("agent-1", "support-triage", {
+      versionId: "version-1"
+    });
 
-    expect(service.rollback).toHaveBeenCalledWith("agent-1", "support-triage", { versionId: "version-1" });
+    expect(service.rollback).toHaveBeenCalledWith("agent-1", "support-triage", {
+      versionId: "version-1"
+    });
   });
 });
 

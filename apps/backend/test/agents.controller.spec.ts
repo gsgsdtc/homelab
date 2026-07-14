@@ -80,7 +80,12 @@ describe("AgentsController broad unit", () => {
         status: "loaded"
       });
 
-    await expect(controller.saveSoul("agent-12345678", { soul: "Updated soul" })).resolves.toMatchObject({
+    await expect(
+      controller.saveSoul("agent-12345678", {
+        soul: "Updated soul",
+        expectedRevision: 1
+      })
+    ).resolves.toMatchObject({
       content: "Updated soul",
       missing: false
     });
@@ -99,7 +104,12 @@ describe("AgentsController broad unit", () => {
     workspaces.writeSoul.mockResolvedValue(undefined);
     prisma.agent.update.mockRejectedValueOnce(new Error("db unavailable"));
 
-    await expect(controller.saveSoul("agent-12345678", { soul: "Updated soul" })).rejects.toThrow("db unavailable");
+    await expect(
+      controller.saveSoul("agent-12345678", {
+        soul: "Updated soul",
+        expectedRevision: 1
+      })
+    ).rejects.toThrow("db unavailable");
 
     expect(workspaces.writeSoul).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "agent-12345678" }), "Updated soul");
     expect(workspaces.writeSoul).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: "agent-12345678" }), "Previous soul");
@@ -114,14 +124,24 @@ describe("AgentsController broad unit", () => {
     workspaces.writeSoul.mockResolvedValue(undefined);
     prisma.agent.update.mockRejectedValueOnce(new Error("db unavailable"));
 
-    await expect(controller.saveSoul("agent-12345678", { soul: "Recovered soul" })).rejects.toThrow("db unavailable");
+    await expect(
+      controller.saveSoul("agent-12345678", {
+        soul: "Recovered soul",
+        expectedRevision: 1
+      })
+    ).rejects.toThrow("db unavailable");
 
     expect(workspaces.writeSoul).toHaveBeenCalledTimes(1);
     expect(workspaces.deleteSoul).toHaveBeenCalledWith(expect.objectContaining({ id: "agent-12345678" }));
   });
 
   it("rejects blank soul without changing workspace/soul.md or the DB snapshot", async () => {
-    await expect(controller.saveSoul("agent-12345678", { soul: " \n\t " })).rejects.toThrow(BadRequestException);
+    await expect(
+      controller.saveSoul("agent-12345678", {
+        soul: " \n\t ",
+        expectedRevision: 1
+      })
+    ).rejects.toThrow(BadRequestException);
 
     expect(workspaces.writeSoul).not.toHaveBeenCalled();
     expect(prisma.agent.update).not.toHaveBeenCalled();
@@ -156,7 +176,8 @@ describe("AgentsController broad unit", () => {
     const allowed = guard.canActivate(context);
     if (allowed) {
       void guardedController.saveSoul("agent-12345678", {
-        soul: "Attempted bypass"
+        soul: "Attempted bypass",
+        expectedRevision: 1
       });
     }
 

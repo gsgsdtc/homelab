@@ -5,8 +5,9 @@ import { ReloadWorkflowResult } from "./agent-workflow-reloader";
 import { AgentWorkflowRuntimeClient } from "./agent-workflow-runtime.client";
 import { AgentWorkflowValidator } from "./agent-workflow-validator.service";
 import { AgentWorkspaceService } from "./agent-workspace.service";
-import { CreateWorkflowDto, ReloadWorkflowDto, RollbackWorkflowDto, WorkflowSourceDto } from "./dto/workflow.dto";
+import { CreateWorkflowDto, ReloadWorkflowDto, RollbackWorkflowDto, WorkflowContentDto, WorkflowSourceDto } from "./dto/workflow.dto";
 import { PrismaService } from "../prisma/prisma.service";
+import { KeyedAsyncLock } from "./keyed-async-lock";
 
 type WorkflowExtension = "ts" | "js";
 type WorkflowReloadStatus = "draft" | "loading" | "succeeded" | "failed";
@@ -25,6 +26,8 @@ export interface PublicAgentWorkflow {
 
 @Injectable()
 export class AgentWorkflowsService {
+  private readonly commitLocks = new KeyedAsyncLock();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly workspaces: AgentWorkspaceService,
@@ -60,7 +63,8 @@ export class AgentWorkflowsService {
     };
   }
 
-  async validate(_agentId: string, workflowKey: string, dto: WorkflowSourceDto) {
+  async validate(agentId: string, workflowKey: string, dto: WorkflowContentDto) {
+    await this.findWorkflow(agentId, workflowKey);
     const extension = dto.extension ?? "ts";
     this.assertSourceSize(dto.source);
     this.validator.validateSource({
@@ -76,63 +80,89 @@ export class AgentWorkflowsService {
   }
 
   async create(agentId: string, dto: CreateWorkflowDto): Promise<PublicAgentWorkflow> {
-    await this.findReadyAgent(agentId);
-    const existing = await this.prisma.agentWorkflow.findUnique({
-      where: { agentId_workflowKey: { agentId, workflowKey: dto.workflowKey } }
-    });
-    if (existing) {
-      throw new ConflictException({
-        code: "WORKFLOW_ALREADY_EXISTS",
-        message: "Workflow key already exists"
+    return this.commitLocks.run(`workflow:${agentId}:${dto.workflowKey}`, async () => {
+      await this.findReadyAgent(agentId);
+      const existing = await this.prisma.agentWorkflow.findUnique({
+        where: {
+          agentId_workflowKey: { agentId, workflowKey: dto.workflowKey }
+        }
       });
-    }
-    return this.saveDraft(agentId, dto);
+      if (existing) {
+        throw new ConflictException({
+          code: "WORKFLOW_ALREADY_EXISTS",
+          message: "Workflow key already exists"
+        });
+      }
+      return this.saveDraftLocked(agentId, dto);
+    });
   }
 
   async saveDraft(agentId: string, dto: CreateWorkflowDto | (WorkflowSourceDto & { workflowKey: string })): Promise<PublicAgentWorkflow> {
+    return this.commitLocks.run(`workflow:${agentId}:${dto.workflowKey}`, () => this.saveDraftLocked(agentId, dto));
+  }
+
+  private async saveDraftLocked(agentId: string, dto: CreateWorkflowDto | (WorkflowSourceDto & { workflowKey: string })): Promise<PublicAgentWorkflow> {
     const agent = await this.findReadyAgent(agentId);
     const extension = dto.extension ?? "ts";
     this.assertSourceSize(dto.source);
-    await this.assertExpectedRevision(agentId, dto.workflowKey, dto.expectedRevision);
+    const existing = await this.assertExpectedRevision(agentId, dto.workflowKey, "expectedRevision" in dto ? dto.expectedRevision : undefined);
     this.validator.validateSource({
       workflowKey: dto.workflowKey,
       extension,
       source: dto.source
     });
     const sourceHash = this.hash(dto.source);
+    const previousSource = existing?.draftHash
+      ? await this.workspaces.readWorkflowSource(agent, dto.workflowKey, existing.extension as WorkflowExtension)
+      : null;
     const writeResult = await this.workspaces.writeWorkflowSource(agent, dto.workflowKey, extension, dto.source);
-    const workflow = await this.prisma.agentWorkflow.upsert({
-      where: {
-        agentId_workflowKey: {
+    try {
+      const workflow = await this.prisma.agentWorkflow.upsert({
+        where: {
+          agentId_workflowKey: {
+            agentId,
+            workflowKey: dto.workflowKey
+          }
+        },
+        create: {
           agentId,
-          workflowKey: dto.workflowKey
+          workflowKey: dto.workflowKey,
+          extension,
+          relativePath: writeResult.relativePath,
+          draftHash: sourceHash,
+          revision: sourceHash,
+          editRevision: 1,
+          reloadStatus: "draft",
+          reloadError: null
+        },
+        update: {
+          extension,
+          relativePath: writeResult.relativePath,
+          draftHash: sourceHash,
+          revision: sourceHash,
+          editRevision: { increment: 1 },
+          reloadStatus: "draft",
+          reloadError: null
         }
-      },
-      create: {
-        agentId,
-        workflowKey: dto.workflowKey,
-        extension,
-        relativePath: writeResult.relativePath,
-        draftHash: sourceHash,
-        revision: sourceHash,
-        editRevision: 1,
-        reloadStatus: "draft",
-        reloadError: null
-      },
-      update: {
-        extension,
-        relativePath: writeResult.relativePath,
-        draftHash: sourceHash,
-        revision: sourceHash,
-        editRevision: { increment: 1 },
-        reloadStatus: "draft",
-        reloadError: null
+      });
+      return this.toPublic(workflow);
+    } catch (error) {
+      if (previousSource !== null && existing) {
+        await this.workspaces.writeWorkflowSource(agent, dto.workflowKey, existing.extension as WorkflowExtension, previousSource);
+      } else {
+        await this.workspaces.deleteWorkflowSource(agent, dto.workflowKey, extension);
       }
-    });
-    return this.toPublic(workflow);
+      throw error;
+    }
   }
 
   async update(agentId: string, workflowKey: string, dto: WorkflowSourceDto): Promise<PublicAgentWorkflow> {
+    if (dto.expectedRevision === undefined) {
+      throw new BadRequestException({
+        code: "WORKFLOW_REVISION_REQUIRED",
+        message: "expectedRevision is required"
+      });
+    }
     return this.saveDraft(agentId, { ...dto, workflowKey });
   }
 
@@ -283,15 +313,15 @@ export class AgentWorkflowsService {
       where: { agentId, workflowKey }
     });
     if (!workflow) {
-      throw new NotFoundException("workflow not found");
+      throw new NotFoundException({
+        code: "SUBRESOURCE_NOT_FOUND",
+        message: "Workflow was not found for this Agent"
+      });
     }
     return workflow;
   }
 
-  private async assertExpectedRevision(agentId: string, workflowKey: string, expectedRevision?: number | string) {
-    if (!expectedRevision) {
-      return;
-    }
+  private async assertExpectedRevision(agentId: string, workflowKey: string, expectedRevision?: number) {
     const existing = await this.prisma.agentWorkflow.findUnique({
       where: {
         agentId_workflowKey: {
@@ -300,10 +330,13 @@ export class AgentWorkflowsService {
         }
       }
     });
-    const matches =
-      typeof expectedRevision === "number"
-        ? existing?.editRevision === expectedRevision
-        : existing?.draftHash === expectedRevision;
+    if (existing && expectedRevision === undefined) {
+      throw new BadRequestException({
+        code: "WORKFLOW_REVISION_REQUIRED",
+        message: "expectedRevision is required"
+      });
+    }
+    const matches = existing?.editRevision === expectedRevision;
     if (existing && !matches) {
       throw new ConflictException({
         code: "WORKFLOW_REVISION_CONFLICT",
@@ -311,6 +344,7 @@ export class AgentWorkflowsService {
         currentRevision: existing.editRevision
       });
     }
+    return existing;
   }
 
   capabilities() {

@@ -1,20 +1,22 @@
-import { IsIn, IsInt, IsOptional, IsString, Matches, MaxLength, Min } from "class-validator";
+import { IsDefined, IsIn, IsInt, IsOptional, IsString, Matches, MaxLength, Min } from "class-validator";
 
-export class WorkflowSourceDto {
+export class WorkflowContentDto {
   @IsString()
   source!: string;
 
   @IsOptional()
   @IsIn(["ts", "js"])
   extension?: "ts" | "js";
-
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  expectedRevision?: number | string;
 }
 
-export class CreateWorkflowDto extends WorkflowSourceDto {
+export class WorkflowSourceDto extends WorkflowContentDto {
+  @IsDefined()
+  @IsInt()
+  @Min(1)
+  expectedRevision!: number;
+}
+
+export class CreateWorkflowDto extends WorkflowContentDto {
   @IsString()
   @Matches(/^[a-z0-9][a-z0-9-]{0,62}$/)
   workflowKey!: string;

@@ -33,7 +33,8 @@ describe("AgentWorkflowsService", () => {
   const workspaces = {
     workflowSourceRelativePath: jest.fn(),
     writeWorkflowSource: jest.fn(),
-    readWorkflowSource: jest.fn()
+    readWorkflowSource: jest.fn(),
+    deleteWorkflowSource: jest.fn()
   } as unknown as AgentWorkspaceService & any;
 
   const validator = {
@@ -79,7 +80,7 @@ describe("AgentWorkflowsService", () => {
     const result = await service.saveDraft("agent-1", {
       workflowKey: "support-triage",
       source: validSource("support-triage"),
-      expectedRevision: "old-draft"
+      expectedRevision: 2
     });
 
     expect(validator.validateSource).toHaveBeenCalledWith({
@@ -109,16 +110,49 @@ describe("AgentWorkflowsService", () => {
     expect(prisma.agentWorkflow.upsert).not.toHaveBeenCalled();
   });
 
-  it("creates collection POST as revision 1 draft without activating it", async () => {
-    prisma.agentWorkflow.findUnique.mockResolvedValue(null);
-    prisma.agentWorkflow.upsert.mockImplementation(async ({ create }: any) =>
-      workflow({ ...create, editRevision: create.editRevision })
-    );
+  it("validates only a workflow owned by the Agent in the request path", async () => {
+    prisma.agentWorkflow.findFirst.mockResolvedValue(null);
     const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
 
     await expect(
-      service.create("agent-1", { workflowKey: "support-triage", source: validSource("support-triage") })
-    ).resolves.toMatchObject({ revision: 1, reloadStatus: "draft", activeHash: null });
+      service.validate("agent-b", "support-triage", {
+        source: validSource("support-triage")
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: "SUBRESOURCE_NOT_FOUND" })
+    });
+    expect(validator.validateSource).not.toHaveBeenCalled();
+  });
+
+  it("requires a numeric revision when updating an existing workflow draft", async () => {
+    prisma.agentWorkflow.findUnique.mockResolvedValue(workflow({ editRevision: 4 }));
+    const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
+
+    await expect(
+      service.update("agent-1", "support-triage", {
+        source: validSource("support-triage")
+      } as any)
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: "WORKFLOW_REVISION_REQUIRED" })
+    });
+    expect(workspaces.writeWorkflowSource).not.toHaveBeenCalled();
+  });
+
+  it("creates collection POST as revision 1 draft without activating it", async () => {
+    prisma.agentWorkflow.findUnique.mockResolvedValue(null);
+    prisma.agentWorkflow.upsert.mockImplementation(async ({ create }: any) => workflow({ ...create, editRevision: create.editRevision }));
+    const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
+
+    await expect(
+      service.create("agent-1", {
+        workflowKey: "support-triage",
+        source: validSource("support-triage")
+      })
+    ).resolves.toMatchObject({
+      revision: 1,
+      reloadStatus: "draft",
+      activeHash: null
+    });
     expect(runtime.reloadWorkflow).not.toHaveBeenCalled();
   });
 
@@ -130,7 +164,7 @@ describe("AgentWorkflowsService", () => {
       service.saveDraft("agent-1", {
         workflowKey: "support-triage",
         source: validSource("support-triage"),
-        expectedRevision: "stale-draft"
+        expectedRevision: 1
       })
     ).rejects.toThrow(ConflictException);
 
@@ -520,12 +554,31 @@ describe("AgentWorkflowsService", () => {
 
     await expect(
       service.saveAndReload("agent-1", "support-triage", {
-        source: validSource("support-triage")
+        source: validSource("support-triage"),
+        expectedRevision: 2
       })
     ).rejects.toThrow("disk full before rename");
 
     expect(prisma.agentWorkflow.upsert).not.toHaveBeenCalled();
     expect(runtime.reloadWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("restores the previous workflow file when the DB commit fails", async () => {
+    prisma.agentWorkflow.findUnique.mockResolvedValue(workflow({ editRevision: 2, draftHash: "old-hash" }));
+    workspaces.readWorkflowSource.mockResolvedValue("previous source");
+    prisma.agentWorkflow.upsert.mockRejectedValueOnce(new Error("database unavailable"));
+    const service = new AgentWorkflowsService(prisma, workspaces, validator, runtime);
+
+    await expect(
+      service.update("agent-1", "support-triage", {
+        source: validSource("support-triage"),
+        expectedRevision: 2
+      })
+    ).rejects.toThrow("database unavailable");
+
+    expect(workspaces.writeWorkflowSource).toHaveBeenNthCalledWith(1, agent(), "support-triage", "ts", validSource("support-triage"));
+    expect(workspaces.writeWorkflowSource).toHaveBeenNthCalledWith(2, agent(), "support-triage", "ts", "previous source");
+    expect(workspaces.deleteWorkflowSource).not.toHaveBeenCalled();
   });
 
   it("returns claim-time snapshot data from the active workflow version", async () => {
@@ -570,6 +623,7 @@ function workflow(overrides: Record<string, unknown> = {}) {
     draftHash: "draft-v1",
     activeHash: null,
     revision: "draft-v1",
+    editRevision: 2,
     reloadStatus: "draft",
     reloadError: null,
     loadedAt: null,

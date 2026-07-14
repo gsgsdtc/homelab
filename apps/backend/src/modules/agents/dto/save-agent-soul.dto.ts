@@ -8,7 +8,7 @@ export class SaveAgentSoulDto {
   @IsDefined()
   @IsInt()
   @Min(1)
-  expectedRevision?: number;
+  expectedRevision!: number;
 
   /** Compile-time compatibility only; ValidationPipe rejects the legacy API field. */
   soul?: string;

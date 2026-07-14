@@ -12,11 +12,10 @@ export class UpdateAgentDto {
   @MaxLength(128)
   modelProviderId?: string | null;
 
-  @IsOptional()
   @IsDefined()
   @IsInt()
   @Min(1)
-  expectedRevision?: number;
+  expectedRevision!: number;
 
   /** Compile-time compatibility only; ValidationPipe rejects legacy API fields. */
   modelProvider?: string;

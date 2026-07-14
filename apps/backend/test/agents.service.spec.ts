@@ -151,7 +151,8 @@ describe("AgentsService", () => {
 
     await expect(
       service.update("agent-123", {
-        soul: "JWT eyJsecretpayload.eyJsecretpayload"
+        soul: "JWT eyJsecretpayload.eyJsecretpayload",
+        expectedRevision: 1
       })
     ).rejects.toThrow(BadRequestException);
 
@@ -197,7 +198,8 @@ describe("AgentsService", () => {
       name: "Ops Agent Updated",
       modelProvider: "anthropic",
       modelSecretRef: "ANTHROPIC_API_KEY",
-      soul: "Updated soul."
+      soul: "Updated soul.",
+      expectedRevision: 1
     });
 
     expect(workspaces.syncWorkspace).toHaveBeenCalledWith(
@@ -221,17 +223,16 @@ describe("AgentsService", () => {
   });
 
   it("returns init_failed when update sync finds user-edited workspace files", async () => {
-    prisma.agent.findUnique.mockResolvedValueOnce(agentFrom({ id: "agent-12345678", status: AgentStatus.ready })).mockResolvedValueOnce(
-      agentFrom({
-        id: "agent-12345678",
-        status: AgentStatus.ready,
-        soul: "Updated soul."
-      })
-    );
+    prisma.agent.findUnique.mockResolvedValueOnce(agentFrom({ id: "agent-12345678", status: AgentStatus.ready }));
     workspaces.syncWorkspace.mockRejectedValueOnce(new Error("workspace file has user edits: soul.md"));
     const service = new AgentsService(prisma, workspaces);
 
-    await expect(service.update("agent-12345678", { soul: "Updated soul." })).rejects.toMatchObject({
+    await expect(
+      service.update("agent-12345678", {
+        soul: "Updated soul.",
+        expectedRevision: 1
+      })
+    ).rejects.toMatchObject({
       response: expect.objectContaining({ code: "AGENT_UPDATE_FAILED" })
     });
   });

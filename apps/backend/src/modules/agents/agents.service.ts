@@ -9,6 +9,7 @@ import {
   UnprocessableEntityException
 } from "@nestjs/common";
 import { Agent, AgentStatus, Prisma } from "@prisma/client";
+import { ConfigService } from "@nestjs/config";
 import { createHash, randomUUID } from "crypto";
 import { ModelProvidersService } from "../model-providers/model-providers.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -16,6 +17,7 @@ import { AgentSoulRead, AgentWorkspaceService } from "./agent-workspace.service"
 import { CreateAgentDto } from "./dto/create-agent.dto";
 import { SaveAgentSoulDto } from "./dto/save-agent-soul.dto";
 import { UpdateAgentDto } from "./dto/update-agent.dto";
+import { KeyedAsyncLock } from "./keyed-async-lock";
 
 const SOUL_MAX_BYTES = 65_536;
 
@@ -57,12 +59,16 @@ export interface PublicAgent {
 
 @Injectable()
 export class AgentsService {
+  private readonly commitLocks = new KeyedAsyncLock();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly workspaces: AgentWorkspaceService,
     @Optional()
     @Inject(ModelProvidersService)
-    private readonly providers?: ModelProvidersService
+    private readonly providers?: ModelProvidersService,
+    @Optional()
+    private readonly config?: ConfigService
   ) {}
 
   async list(input?: AgentListQuery) {
@@ -98,8 +104,9 @@ export class AgentsService {
         select: { id: true, name: true, isActive: true }
       })
     ]);
+    const readAgents = await Promise.all(agents.map((agent) => this.normalizeReadAgent(agent)));
     const response = {
-      items: agents.map((agent) => this.toPublic(agent, defaultProvider)),
+      items: readAgents.map((agent) => this.toPublic(agent, defaultProvider)),
       total,
       page,
       pageSize
@@ -178,6 +185,16 @@ export class AgentsService {
   }
 
   async update(id: string, dto: UpdateAgentDto): Promise<PublicAgent> {
+    if (dto.expectedRevision === undefined) {
+      throw new BadRequestException({
+        code: "REVISION_REQUIRED",
+        message: "expectedRevision is required"
+      });
+    }
+    return this.commitLocks.run(`agent:${id}`, () => this.updateLocked(id, dto));
+  }
+
+  private async updateLocked(id: string, dto: UpdateAgentDto): Promise<PublicAgent> {
     for (const [field, value] of [
       ["name", dto.name],
       ["modelProviderId", dto.modelProviderId ?? dto.modelProvider],
@@ -187,48 +204,53 @@ export class AgentsService {
       if (value) this.assertNoSecretLeak(value, field);
     }
     const previous = await this.findAgent(id);
-    const expectedRevision = dto.expectedRevision ?? previous.revision;
+    const expectedRevision = dto.expectedRevision;
     if (previous.revision !== expectedRevision) {
       throw this.revisionConflict(previous.revision);
     }
     const providerId =
       dto.modelProviderId === undefined && dto.modelProvider === undefined ? previous.modelProviderId : (dto.modelProviderId ?? dto.modelProvider ?? null);
     await this.resolveProvider(providerId);
-    const result = await this.updateMany({
-      where: { id, revision: expectedRevision },
-      data: {
-        name: dto.name?.trim(),
-        modelProviderId: providerId,
-        modelProvider: providerId,
-        modelSecretRef: dto.modelSecretRef,
-        soul: dto.soul,
-        revision: { increment: 1 }
-      }
-    });
-    if (result.count !== 1) {
-      const current = await this.findAgent(id);
-      throw this.revisionConflict(current.revision);
-    }
-
-    const updated = await this.findAgent(id);
+    const candidate: Agent = {
+      ...previous,
+      name: dto.name?.trim() ?? previous.name,
+      modelProviderId: providerId,
+      modelProvider: providerId,
+      modelSecretRef: dto.modelSecretRef === undefined ? previous.modelSecretRef : dto.modelSecretRef,
+      soul: dto.soul === undefined ? previous.soul : dto.soul,
+      revision: expectedRevision + 1
+    };
     try {
-      await this.workspaces.syncWorkspace(updated, previous);
+      await this.workspaces.syncWorkspace(candidate, previous);
     } catch (error) {
-      await this.prisma.agent.update({
-        where: { id },
-        data: {
-          name: previous.name,
-          modelProviderId: previous.modelProviderId,
-          modelProvider: previous.modelProvider,
-          revision: previous.revision
-        }
-      });
-      await Promise.resolve(this.workspaces.syncWorkspace(previous, updated)).catch(() => undefined);
       throw new ConflictException({
         code: "AGENT_UPDATE_FAILED",
         message: this.safeError(error)
       });
     }
+
+    try {
+      const result = await this.updateMany({
+        where: { id, revision: expectedRevision },
+        data: {
+          name: candidate.name,
+          modelProviderId: providerId,
+          modelProvider: providerId,
+          modelSecretRef: candidate.modelSecretRef,
+          soul: candidate.soul,
+          revision: { increment: 1 }
+        }
+      });
+      if (result.count !== 1) {
+        const current = await this.findAgent(id);
+        throw this.revisionConflict(current.revision);
+      }
+    } catch (error) {
+      await Promise.resolve(this.workspaces.syncWorkspace(previous, candidate)).catch(() => undefined);
+      throw error;
+    }
+
+    const updated = await this.findAgent(id);
     return this.toPublic(updated, await this.findDefaultProvider());
   }
 
@@ -250,6 +272,16 @@ export class AgentsService {
   }
 
   async saveSoul(id: string, dto: SaveAgentSoulDto) {
+    if (dto.expectedRevision === undefined) {
+      throw new BadRequestException({
+        code: "SOUL_REVISION_REQUIRED",
+        message: "expectedRevision is required"
+      });
+    }
+    return this.commitLocks.run(`soul:${id}`, () => this.saveSoulLocked(id, dto));
+  }
+
+  private async saveSoulLocked(id: string, dto: SaveAgentSoulDto) {
     const content = dto.content ?? dto.soul ?? "";
     const bytes = Buffer.byteLength(content, "utf8");
     if (bytes > SOUL_MAX_BYTES) {
@@ -267,7 +299,7 @@ export class AgentsService {
     this.assertNoSecretLeak(content, "content");
     const agent = await this.findAgent(id);
     this.assertReady(agent);
-    const expectedRevision = dto.expectedRevision ?? agent.soulRevision;
+    const expectedRevision = dto.expectedRevision;
     if (agent.soulRevision !== expectedRevision) {
       throw new ConflictException({
         code: "SOUL_REVISION_CONFLICT",
@@ -311,11 +343,21 @@ export class AgentsService {
   }
 
   async retryInitialization(id: string): Promise<PublicAgent> {
+    return this.commitLocks.run(`initialization:${id}`, () => this.retryInitializationLocked(id));
+  }
+
+  private async retryInitializationLocked(id: string): Promise<PublicAgent> {
     const existing = await this.findAgent(id);
     if (existing.status === AgentStatus.initializing) {
       throw new ConflictException({
         code: "INITIALIZATION_IN_PROGRESS",
         message: "Agent initialization is already in progress"
+      });
+    }
+    if (existing.status !== AgentStatus.init_failed) {
+      throw new ConflictException({
+        code: "INITIALIZATION_NOT_RETRYABLE",
+        message: "Only failed Agent initialization can be retried"
       });
     }
     const acquired = await this.updateMany({
@@ -407,7 +449,7 @@ export class AgentsService {
         code: "AGENT_NOT_FOUND",
         message: "Agent not found"
       });
-    return agent;
+    return this.normalizeReadAgent(agent);
   }
 
   private async findDefaultProvider() {
@@ -450,7 +492,20 @@ export class AgentsService {
         message: "Idempotency-Key was already used with a different payload"
       });
     }
-    return this.toPublic(request.agent, await this.findDefaultProvider());
+    return this.toPublic(await this.normalizeReadAgent(request.agent), await this.findDefaultProvider());
+  }
+
+  private async normalizeReadAgent(agent: AgentRecord): Promise<AgentRecord> {
+    if (this.config?.get<string>("AGENT_PROVIDER_READ_MODE") !== "legacy") return agent;
+    const legacyProviderId = agent.modelProvider?.trim() || null;
+    if (legacyProviderId === agent.modelProviderId) return agent;
+    const provider = legacyProviderId
+      ? await this.prisma.modelProvider.findUnique({
+          where: { id: legacyProviderId },
+          select: { id: true, name: true, isActive: true }
+        })
+      : null;
+    return { ...agent, modelProviderId: legacyProviderId, provider };
   }
 
   private toPublic(agent: AgentRecord, defaultProvider: { id: string; name: string; isActive: boolean } | null): PublicAgent {

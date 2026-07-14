@@ -4,7 +4,7 @@ import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { join, relative, resolve, sep } from "path";
 import { Agent } from "@prisma/client";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { execFileSync } from "child_process";
 import { AgentSkillMutation, SkillConfigEntry } from "./agent-skill-types";
 
@@ -251,6 +251,19 @@ export class AgentWorkspaceService {
     return readFile(sourcePath, "utf8");
   }
 
+  async deleteWorkflowSource(
+    agent: Pick<InitializeWorkspaceInput, "workspaceName" | "workspacePath">,
+    workflowKey: string,
+    extension: "ts" | "js"
+  ): Promise<void> {
+    this.assertSafeWorkflowKey(workflowKey);
+    this.assertSafeWorkflowExtension(extension);
+    const descriptor = this.descriptorFromAgent(agent);
+    const sourcePath = this.workflowSourcePath(descriptor, workflowKey, extension);
+    this.assertInsideRoot(descriptor.rootPath, sourcePath);
+    await rm(sourcePath, { force: true });
+  }
+
   async readSoul(agent: Pick<InitializeWorkspaceInput, "name" | "workspaceName" | "workspacePath">): Promise<AgentSoulRead> {
     const descriptor = this.descriptorFromAgent(agent);
     try {
@@ -288,7 +301,10 @@ export class AgentWorkspaceService {
     await mkdir(descriptor.workspacePath, { recursive: true });
     await this.assertNoSymlinkEscape(descriptor.rootPath, descriptor.workspacePath);
     await this.assertSoulPathSafe(descriptor, { allowMissingFile: true });
-    await writeFile(this.soulPath(descriptor), content, "utf8");
+    const soulPath = this.soulPath(descriptor);
+    const nextPath = `${soulPath}.${randomUUID()}.next`;
+    await writeFile(nextPath, content, "utf8");
+    await rename(nextPath, soulPath);
   }
 
   async deleteSoul(agent: Pick<InitializeWorkspaceInput, "name" | "workspaceName" | "workspacePath">): Promise<void> {
@@ -456,7 +472,8 @@ export class AgentWorkspaceService {
       `slug: ${agent.slug}`,
       `workspacePath: ${descriptor.relativeWorkspacePath}`,
       "model:",
-      `  providerId: ${(agent.modelProviderId ?? agent.modelProvider) ? this.quoteYaml(agent.modelProviderId ?? agent.modelProvider ?? "") : "null"}`,
+      // Keep the rollback target's YAML key during the expand compatibility window.
+      `  provider: ${(agent.modelProviderId ?? agent.modelProvider) ? this.quoteYaml(agent.modelProviderId ?? agent.modelProvider ?? "") : "null"}`,
       ""
     ].join("\n");
   }
