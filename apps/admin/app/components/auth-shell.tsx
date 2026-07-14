@@ -15,32 +15,66 @@ const nav = [
 export function AuthShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [status, setStatus] = useState<"checking" | "ready" | "denied">(
-    "checking",
-  );
+  const [status, setStatus] = useState<
+    "checking" | "ready" | "login" | "forbidden"
+  >("checking");
 
   useEffect(() => {
     if (!api.getToken()) {
-      setStatus("denied");
+      setStatus("login");
       router.replace("/login");
       return;
     }
 
+    let active = true;
     api
       .me()
-      .then(() => setStatus("ready"))
+      .then((user) => {
+        if (active) {
+          setStatus(user.role === "ADMIN" ? "ready" : "forbidden");
+        }
+      })
       .catch(() => {
-        setStatus("denied");
-        router.replace("/login");
+        if (active) {
+          setStatus("login");
+          router.replace("/login");
+        }
       });
+    return () => {
+      active = false;
+    };
   }, [router]);
 
   if (status === "checking") {
     return <main className="center-state">正在校验登录态...</main>;
   }
 
-  if (status === "denied") {
+  if (status === "login") {
     return <main className="center-state">请先登录</main>;
+  }
+
+  if (status === "forbidden") {
+    return (
+      <main className="center-state">
+        <section
+          className="permission-panel"
+          aria-labelledby="permission-title"
+        >
+          <p className="eyebrow">Permission denied</p>
+          <h1 id="permission-title">当前账号无权访问管理后台</h1>
+          <p>Agent 管理仅向 ADMIN 开放。请使用管理员账号重新登录。</p>
+          <button
+            onClick={() => {
+              api.logout();
+              router.replace("/login");
+            }}
+            type="button"
+          >
+            返回登录
+          </button>
+        </section>
+      </main>
+    );
   }
 
   return (

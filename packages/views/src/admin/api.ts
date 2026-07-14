@@ -29,27 +29,34 @@ export interface AppIdentity {
 }
 
 export type AgentStatus = "initializing" | "ready" | "init_failed";
-export type AgentGitStatus = "available" | "unavailable" | "dirty" | "clean";
+export type AgentGitStatus = "unavailable" | "dirty" | "clean";
 export type AgentSoulFileStatus = "loaded" | "missing" | "error";
 
 export interface AgentInitError {
   code?: string;
   message: string;
+  requestId?: string;
+}
+
+export interface AgentProviderSummary {
+  id: string | null;
+  name: string | null;
+  source: "explicit" | "default" | "invalid";
 }
 
 export interface Agent {
   id: string;
   name: string;
-  status: AgentStatus;
+  slug?: string;
+  status: AgentStatus | string;
   workspacePath: string | null;
   workspaceName: string | null;
   initError: AgentInitError | null;
-  gitStatus: AgentGitStatus;
-  modelProvider?: string | null;
-  modelSecretRef?: string | null;
-  soul?: string | null;
-  soulFileStatus?: AgentSoulFileStatus;
-  soulFileError?: string;
+  gitStatus: AgentGitStatus | string;
+  modelProviderId?: string | null;
+  providerSummary?: AgentProviderSummary;
+  revision?: number;
+  workspaceFiles?: Array<{ name: string; present: boolean }>;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -57,9 +64,112 @@ export interface Agent {
 export interface AgentMutationPayload {
   name?: string;
   slug?: string;
-  modelProvider?: string;
-  modelSecretRef?: string;
-  soul?: string;
+  modelProviderId?: string | null;
+  expectedRevision?: number;
+}
+
+export interface AgentSoul {
+  content: string;
+  missing: boolean;
+  revision: number;
+  maxBytes: number;
+}
+
+export type AgentSkillSourceType = "registry" | "git";
+export type AgentSkillChangeStatus =
+  | "pending"
+  | "validating"
+  | "applying"
+  | "reloading"
+  | "succeeded"
+  | "failed"
+  | "rolled_back"
+  | "rollback_failed";
+export type AgentSkillReloadStatus =
+  "loaded" | "failed" | "pending_restart" | "runtime_offline" | "unknown";
+export type AgentSkillAuditStatus =
+  "audit_written" | "audit_pending" | "audit_failed";
+export type AgentSkillRollbackResult =
+  "not_required" | "succeeded" | "failed" | "skipped";
+
+export interface AgentSkill {
+  name: string;
+  version: string;
+  sourceType: AgentSkillSourceType;
+  sourceId: string;
+  enabled: boolean;
+  systemRequired: boolean;
+  selfUpdateAllowed: boolean;
+}
+
+export interface AgentSkillState {
+  agentId: string;
+  changeStatus: AgentSkillChangeStatus;
+  reloadStatus: AgentSkillReloadStatus;
+  auditStatus: AgentSkillAuditStatus;
+  rollbackResult: AgentSkillRollbackResult;
+  failedStage: string | null;
+  errorCode: string | null;
+  safeErrorSummary: string | null;
+  skills: AgentSkill[];
+}
+
+export interface AgentSkillChange extends Omit<
+  AgentSkillState,
+  "agentId" | "skills"
+> {
+  changeId: string;
+  skillName: string;
+  operation: "install" | "update" | "remove";
+  terminal?: boolean;
+  finishedAt?: string | null;
+}
+
+export interface SkillCatalogSource {
+  id: string;
+  name: string;
+  sourceType: AgentSkillSourceType;
+}
+
+export interface SkillCatalogSkill {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface SkillCatalogVersion {
+  version: string;
+  immutableRef: string;
+  isLatest?: boolean;
+}
+
+export type WorkflowReloadStatus = "draft" | "loading" | "succeeded" | "failed";
+export interface AgentWorkflow {
+  workflowKey: string;
+  filePath?: string;
+  source?: string;
+  extension?: "ts" | "js";
+  draftHash: string | null;
+  activeHash: string | null;
+  revision: string | number;
+  reloadStatus: WorkflowReloadStatus | string;
+  loadedAt?: string | null;
+  updatedAt?: string;
+  error?: { code?: string; message: string } | null;
+}
+
+export interface AgentWorkflowVersion {
+  id: string;
+  sourceHash: string;
+  source: string;
+  extension: "ts" | "js";
+  promotedAt?: string;
+}
+
+export interface WorkflowCapabilities {
+  maxSourceBytes: number;
+  reloadTimeoutMs: number;
+  allowedExtensions: Array<"ts" | "js">;
 }
 
 export type ModelProviderType = "OPENAI_COMPATIBLE";
@@ -312,42 +422,230 @@ export class AdminApiClient {
     });
   }
 
-  listAgents() {
-    return this.request<Agent[]>("/agents");
+  listAgents(
+    params: { query?: string; page?: number; pageSize?: number } = {},
+  ) {
+    return this.request<PageResult<Agent>>(`/agents${toQuery(params)}`);
   }
 
   getAgent(id: string) {
-    return this.request<Agent>(`/agents/${id}`);
+    return this.request<Agent>(`/agents/${encodeURIComponent(id)}`);
   }
 
   createAgent(
     payload: Required<Pick<AgentMutationPayload, "name">> &
       AgentMutationPayload,
+    idempotencyKey?: string,
   ) {
     return this.request<Agent>("/agents", {
       method: "POST",
       body: JSON.stringify(payload),
+      headers: idempotencyKey
+        ? { "Idempotency-Key": idempotencyKey }
+        : undefined,
     });
   }
 
   updateAgent(id: string, payload: AgentMutationPayload) {
-    return this.request<Agent>(`/agents/${id}`, {
+    return this.request<Agent>(`/agents/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
     });
   }
 
-  saveAgentSoul(id: string, soul: string) {
-    return this.request<Agent>(`/agents/${id}/soul`, {
-      method: "PATCH",
-      body: JSON.stringify({ soul }),
+  getAgentSoul(id: string) {
+    return this.request<AgentSoul>(`/agents/${encodeURIComponent(id)}/soul`);
+  }
+
+  saveAgentSoul(id: string, content: string, expectedRevision: number) {
+    return this.request<AgentSoul>(`/agents/${encodeURIComponent(id)}/soul`, {
+      method: "PUT",
+      body: JSON.stringify({ content, expectedRevision }),
     });
   }
 
   retryAgentInitialization(id: string) {
-    return this.request<Agent>(`/agents/${id}/retry-initialization`, {
-      method: "POST",
-    });
+    return this.request<Agent>(
+      `/agents/${encodeURIComponent(id)}/retry-initialization`,
+      {
+        method: "POST",
+      },
+    );
+  }
+
+  listSkillCatalogSources(params: { page?: number; pageSize?: number } = {}) {
+    return this.request<PageResult<SkillCatalogSource>>(
+      `/skill-catalog/sources${toQuery(params)}`,
+    );
+  }
+
+  listSkillCatalogSkills(
+    sourceId: string,
+    params: { page?: number; pageSize?: number } = {},
+  ) {
+    return this.request<PageResult<SkillCatalogSkill>>(
+      `/skill-catalog/sources/${encodeURIComponent(sourceId)}/skills${toQuery(params)}`,
+    );
+  }
+
+  listSkillCatalogVersions(
+    sourceId: string,
+    skillId: string,
+    params: { page?: number; pageSize?: number } = {},
+  ) {
+    return this.request<PageResult<SkillCatalogVersion>>(
+      `/skill-catalog/sources/${encodeURIComponent(sourceId)}/skills/${encodeURIComponent(skillId)}/versions${toQuery(params)}`,
+    );
+  }
+
+  listAgentSkills(agentId: string) {
+    return this.request<AgentSkillState>(
+      `/agents/${encodeURIComponent(agentId)}/skills`,
+    );
+  }
+
+  installAgentSkill(
+    agentId: string,
+    payload: {
+      skillName: string;
+      sourceId: string;
+      sourceType: AgentSkillSourceType;
+      version: string;
+    },
+  ) {
+    return this.request<AgentSkillChange>(
+      `/agents/${encodeURIComponent(agentId)}/skills/install`,
+      { method: "POST", body: JSON.stringify(payload) },
+    );
+  }
+
+  updateAgentSkill(
+    agentId: string,
+    payload: {
+      skillName: string;
+      sourceId: string;
+      sourceType: AgentSkillSourceType;
+      version: string;
+    },
+  ) {
+    return this.request<AgentSkillChange>(
+      `/agents/${encodeURIComponent(agentId)}/skills/update`,
+      { method: "POST", body: JSON.stringify(payload) },
+    );
+  }
+
+  removeAgentSkill(agentId: string, skillName: string) {
+    return this.request<AgentSkillChange>(
+      `/agents/${encodeURIComponent(agentId)}/skills/remove`,
+      { method: "POST", body: JSON.stringify({ skillName }) },
+    );
+  }
+
+  getAgentSkillChange(agentId: string, changeId: string) {
+    return this.request<AgentSkillChange>(
+      `/agents/${encodeURIComponent(agentId)}/skills/changes/${encodeURIComponent(changeId)}`,
+    );
+  }
+
+  listAgentWorkflows(agentId: string) {
+    return this.request<AgentWorkflow[]>(
+      `/agents/${encodeURIComponent(agentId)}/workflows`,
+    );
+  }
+
+  createAgentWorkflow(
+    agentId: string,
+    payload: {
+      workflowKey: string;
+      source: string;
+      extension: "ts" | "js";
+    },
+  ) {
+    return this.request<AgentWorkflow>(
+      `/agents/${encodeURIComponent(agentId)}/workflows`,
+      { method: "POST", body: JSON.stringify(payload) },
+    );
+  }
+
+  getAgentWorkflow(agentId: string, workflowKey: string) {
+    return this.request<AgentWorkflow>(
+      `/agents/${encodeURIComponent(agentId)}/workflows/${encodeURIComponent(workflowKey)}`,
+    );
+  }
+
+  saveAgentWorkflowDraft(
+    agentId: string,
+    workflowKey: string,
+    payload: {
+      source: string;
+      extension: "ts" | "js";
+      expectedRevision?: string | number;
+    },
+  ) {
+    return this.request<AgentWorkflow>(
+      `/agents/${encodeURIComponent(agentId)}/workflows/${encodeURIComponent(workflowKey)}`,
+      { method: "PUT", body: JSON.stringify(payload) },
+    );
+  }
+
+  validateAgentWorkflow(
+    agentId: string,
+    workflowKey: string,
+    payload: { source: string; extension: "ts" | "js" },
+  ) {
+    return this.request<{ valid: boolean; errors?: string[] }>(
+      `/agents/${encodeURIComponent(agentId)}/workflows/${encodeURIComponent(workflowKey)}/validate`,
+      { method: "POST", body: JSON.stringify(payload) },
+    );
+  }
+
+  reloadAgentWorkflow(
+    agentId: string,
+    workflowKey: string,
+    expectedDraftHash?: string,
+  ) {
+    return this.request<AgentWorkflow>(
+      `/agents/${encodeURIComponent(agentId)}/workflows/${encodeURIComponent(workflowKey)}/reload`,
+      { method: "POST", body: JSON.stringify({ expectedDraftHash }) },
+    );
+  }
+
+  saveAndReloadAgentWorkflow(
+    agentId: string,
+    workflowKey: string,
+    payload: {
+      source: string;
+      extension: "ts" | "js";
+      expectedRevision?: string | number;
+    },
+  ) {
+    return this.request<AgentWorkflow>(
+      `/agents/${encodeURIComponent(agentId)}/workflows/${encodeURIComponent(workflowKey)}/save-and-reload`,
+      { method: "POST", body: JSON.stringify(payload) },
+    );
+  }
+
+  listAgentWorkflowVersions(agentId: string, workflowKey: string) {
+    return this.request<AgentWorkflowVersion[]>(
+      `/agents/${encodeURIComponent(agentId)}/workflows/${encodeURIComponent(workflowKey)}/versions`,
+    );
+  }
+
+  rollbackAgentWorkflow(
+    agentId: string,
+    workflowKey: string,
+    versionId: string,
+  ) {
+    return this.request<AgentWorkflow>(
+      `/agents/${encodeURIComponent(agentId)}/workflows/${encodeURIComponent(workflowKey)}/rollback`,
+      { method: "POST", body: JSON.stringify({ versionId }) },
+    );
+  }
+
+  getWorkflowCapabilities(agentId: string) {
+    return this.request<WorkflowCapabilities>(
+      `/agents/${encodeURIComponent(agentId)}/workflow-capabilities`,
+    );
   }
 
   private async request<T>(

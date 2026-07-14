@@ -1,186 +1,186 @@
 "use client";
 
 import {
-  getAgentSoulNotice,
-  isAgentSoulSaveDisabled,
-  validateAgentSoulDraft,
+  AGENT_OPERATION_POLL_TIMEOUT_MS,
+  formatAgentGitStatus,
+  formatAgentStatus,
+  formatSkillChangeStatus,
+  formatSkillReloadStatus,
+  formatWorkflowReloadStatus,
+  getSoulByteLength,
+  getAgentOperationPollDelay,
+  isSkillChangeTerminal,
+  isSoulDraftValid,
+  selectEnabledProviders,
+  validateWorkflowKey,
   type Agent,
-  type AgentGitStatus,
-  type AgentSoulFileStatus,
-  type AgentStatus,
-  type PublicUser,
+  type AgentSkill,
+  type AgentSkillChange,
+  type AgentSkillState,
+  type AgentSoul,
+  type AgentWorkflow,
+  type AgentWorkflowVersion,
+  type ModelProvider,
+  type SkillCatalogSkill,
+  type SkillCatalogSource,
+  type SkillCatalogVersion,
 } from "@homelab/views";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AuthShell } from "../components/auth-shell";
 import { api } from "../lib/api";
 
-const statusText: Record<AgentStatus, string> = {
-  initializing: "初始化中",
-  ready: "可用",
-  init_failed: "初始化失败",
-};
-
-const gitStatusText: Record<AgentGitStatus, string> = {
-  available: "可用",
-  unavailable: "不可用",
-  dirty: "有未提交变更",
-  clean: "无未提交变更",
-};
+type DetailTab = "overview" | "workspace" | "soul" | "skills" | "workflow";
+const pageSizes = [20, 50, 100] as const;
 
 export default function AgentsPage() {
+  const initialListState = useMemo(() => readAgentListState(), []);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [providers, setProviders] = useState<ModelProvider[]>([]);
+  const [queryDraft, setQueryDraft] = useState(initialListState.query);
+  const [query, setQuery] = useState(initialListState.query);
+  const [page, setPage] = useState(initialListState.page);
+  const [pageSize, setPageSize] = useState<number>(initialListState.pageSize);
+  const [total, setTotal] = useState(0);
   const [selectedId, setSelectedId] = useState("");
+  const [detail, setDetail] = useState<Agent | null>(null);
+  const [tab, setTab] = useState<DetailTab>("overview");
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [busyId, setBusyId] = useState("");
-  const [error, setError] = useState("");
+  const [listError, setListError] = useState("");
+  const [detailError, setDetailError] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
-  const [currentUser, setCurrentUser] = useState<PublicUser | null>(null);
-  const [selectedDetail, setSelectedDetail] = useState<Agent | null>(null);
-  const [soulDraft, setSoulDraft] = useState("");
-  const [savedSoul, setSavedSoul] = useState("");
-  const [soulMessage, setSoulMessage] = useState("");
-  const [soulError, setSoulError] = useState("");
-  const [savingSoul, setSavingSoul] = useState(false);
-  const detailRequestRef = useRef(0);
+  const detailRequest = useRef(0);
 
-  const selected = useMemo(
-    () =>
-      selectedDetail?.id === selectedId
-        ? selectedDetail
-        : (agents.find((agent) => agent.id === selectedId) ??
-          agents[0] ??
-          null),
-    [agents, selectedDetail, selectedId],
+  const enabledProviders = useMemo(
+    () => selectEnabledProviders(providers),
+    [providers],
   );
-  const canEditSoul = currentUser?.role === "ADMIN";
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
 
-  async function load(nextSelectedId = selectedId) {
+  function applyAgentSnapshot(next: Agent) {
+    setDetail(next);
+    setAgents((current) =>
+      current.map((item) =>
+        item.id === next.id ? { ...item, ...next } : item,
+      ),
+    );
+  }
+
+  async function loadAgents(
+    next: { query: string; page: number; pageSize: number },
+    preferredId = selectedId,
+  ) {
     setLoading(true);
-    setError("");
+    setListError("");
     try {
-      const nextAgents = await api.listAgents();
-      setAgents(nextAgents);
-      if (nextAgents.length === 0) {
-        setSelectedId("");
-      } else if (
-        nextSelectedId &&
-        nextAgents.some((agent) => agent.id === nextSelectedId)
-      ) {
-        setSelectedId(nextSelectedId);
-      } else {
-        setSelectedId(nextAgents[0].id);
+      const result = await api.listAgents(next);
+      setAgents(result.items);
+      setTotal(result.total);
+      setPage(result.page);
+      setPageSize(result.pageSize);
+      syncAgentListUrl({
+        query: next.query,
+        page: result.page,
+        pageSize: result.pageSize,
+      });
+      const nextSelected = result.items.some((item) => item.id === preferredId)
+        ? preferredId
+        : (result.items[0]?.id ?? "");
+      setSelectedId(nextSelected);
+      if (!nextSelected) {
+        setDetail(null);
       }
     } catch {
-      setError("Agent 列表加载失败");
+      setListError(
+        agents.length ? "列表刷新失败，请重试" : "Agent 列表加载失败，请重试",
+      );
     } finally {
       setLoading(false);
     }
   }
 
-  async function retryInitialization(agent: Agent) {
-    setBusyId(agent.id);
-    setError("");
-    try {
-      const retried = await api.retryAgentInitialization(agent.id);
-      setAgents((current) =>
-        current.map((item) => (item.id === retried.id ? retried : item)),
-      );
-      setSelectedId(retried.id);
-    } catch {
-      setError("重试初始化失败");
-    } finally {
-      setBusyId("");
-    }
-  }
+  useEffect(() => {
+    void loadAgents(initialListState, "");
+    api
+      .listModelProviders()
+      .then(setProviders)
+      .catch(() => setProviders([]));
+  }, []);
 
   async function loadAgentDetail(agentId: string) {
-    const requestId = detailRequestRef.current + 1;
-    detailRequestRef.current = requestId;
-    if (!agentId) {
-      setSelectedDetail(null);
-      setSavedSoul("");
-      setSoulDraft("");
-      return;
-    }
-    const fallbackAgent = agents.find((agent) => agent.id === agentId) ?? null;
+    const requestId = detailRequest.current + 1;
+    detailRequest.current = requestId;
     setDetailLoading(true);
-    setSelectedDetail(null);
-    setSavedSoul("");
-    setSoulDraft("");
-    setSoulError("");
-    setSoulMessage("");
+    setDetailError("");
     try {
-      const detail = await api.getAgent(agentId);
-      if (detailRequestRef.current !== requestId) {
-        return;
+      const next = await api.getAgent(agentId);
+      if (detailRequest.current === requestId) {
+        applyAgentSnapshot(next);
       }
-      setSelectedDetail(detail);
-      const soul = detail.soul ?? "";
-      setSavedSoul(soul);
-      setSoulDraft(detail.soulFileStatus === "error" ? "" : soul);
     } catch {
-      if (detailRequestRef.current !== requestId) {
-        return;
+      if (detailRequest.current === requestId) {
+        setDetail(null);
+        setDetailError("Agent 详情加载失败，请重试");
       }
-      if (fallbackAgent) {
-        setSelectedDetail({
-          ...fallbackAgent,
-          soul: null,
-          soulFileStatus: "error",
-          soulFileError: "Agent 详情加载失败",
-        });
-      }
-      setSavedSoul("");
-      setSoulDraft("");
-      setSoulError("Agent 详情加载失败");
     } finally {
-      if (detailRequestRef.current === requestId) {
+      if (detailRequest.current === requestId) {
         setDetailLoading(false);
       }
     }
   }
 
-  async function saveSoul(agent: Agent) {
-    setSoulError("");
-    setSoulMessage("");
-    const validationError = validateAgentSoulDraft(soulDraft);
-    if (validationError) {
-      setSoulError(validationError);
+  useEffect(() => {
+    if (!selectedId) {
+      setDetail(null);
       return;
     }
-    setSavingSoul(true);
-    try {
-      const updated = await api.saveAgentSoul(agent.id, soulDraft);
-      setSelectedDetail(updated);
-      setAgents((current) =>
-        current.map((item) => (item.id === updated.id ? updated : item)),
-      );
-      const nextSoul = updated.soul ?? soulDraft;
-      setSavedSoul(nextSoul);
-      setSoulDraft(nextSoul);
-      setSoulMessage("保存成功");
-    } catch {
-      setSoulError("保存失败，请稍后重试");
-    } finally {
-      setSavingSoul(false);
-    }
-  }
-
-  useEffect(() => {
-    void load("");
-  }, []);
-
-  useEffect(() => {
-    api
-      .me()
-      .then((user) => setCurrentUser(user))
-      .catch(() => setCurrentUser(null));
-  }, []);
-
-  useEffect(() => {
     void loadAgentDetail(selectedId);
   }, [selectedId]);
+
+  useEffect(() => {
+    if (
+      !detail ||
+      detail.id !== selectedId ||
+      detail.status !== "initializing"
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    let elapsedMs = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      const delay = getAgentOperationPollDelay(elapsedMs);
+      timer = setTimeout(async () => {
+        elapsedMs += delay;
+        try {
+          const next = await api.getAgent(detail.id);
+          if (cancelled) return;
+          applyAgentSnapshot(next);
+          if (
+            next.status === "initializing" &&
+            elapsedMs < AGENT_OPERATION_POLL_TIMEOUT_MS
+          ) {
+            schedule();
+          }
+        } catch {
+          if (!cancelled && elapsedMs < AGENT_OPERATION_POLL_TIMEOUT_MS) {
+            schedule();
+          }
+        }
+      }, delay);
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [detail?.id, detail?.status, selectedId]);
+
+  function selectAgent(agentId: string) {
+    setSelectedId(agentId);
+    setTab("overview");
+  }
 
   return (
     <AuthShell>
@@ -188,63 +188,97 @@ export default function AgentsPage() {
         <div>
           <p className="eyebrow">Agents</p>
           <h2>Agent 管理</h2>
+          <p className="page-summary">
+            配置 Workspace、Soul、Skills 与 Workflow
+          </p>
         </div>
         <button onClick={() => setCreateOpen(true)} type="button">
           新增 Agent
         </button>
       </section>
 
-      {error ? <div className="notice error">{error}</div> : null}
-      {loading ? <div className="notice">加载中...</div> : null}
+      <form
+        className="toolbar agent-toolbar"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const nextQuery = queryDraft.trim();
+          setQuery(nextQuery);
+          void loadAgents({ query: nextQuery, page: 1, pageSize });
+        }}
+      >
+        <label className="visually-labeled-field">
+          <span>名称或标识</span>
+          <input
+            aria-label="搜索 Agent"
+            onChange={(event) => setQueryDraft(event.target.value)}
+            placeholder="搜索名称或标识"
+            value={queryDraft}
+          />
+        </label>
+        <button type="submit">查询</button>
+        <button
+          className="ghost-button inline-ghost"
+          onClick={() => void loadAgents({ query, page, pageSize })}
+          type="button"
+        >
+          刷新
+        </button>
+      </form>
 
+      {listError ? <Notice tone="error">{listError}</Notice> : null}
+      {loading ? <Notice>正在加载 Agent...</Notice> : null}
       {!loading && agents.length === 0 ? (
-        <div className="empty-state">暂无 Agent</div>
+        <div className="empty-state">
+          {query ? "未找到匹配 Agent" : "暂无 Agent"}
+        </div>
       ) : null}
-      {!loading && agents.length > 0 ? (
-        <div className="agents-layout">
-          <div className="table-wrap">
+
+      {agents.length ? (
+        <>
+          <div className="table-wrap agent-table">
             <table>
               <thead>
                 <tr>
-                  <th>名称</th>
+                  <th>名称 / 标识</th>
+                  <th>Provider</th>
                   <th>状态</th>
-                  <th>Workspace</th>
-                  <th>Git</th>
+                  <th>Workspace / Git</th>
+                  <th>更新时间</th>
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody>
-                {agents.map((agent) => (
-                  <tr key={agent.id}>
-                    <td data-label="名称">{agent.name}</td>
+                {agents.map((item) => (
+                  <tr
+                    className={item.id === selectedId ? "selected-row" : ""}
+                    key={item.id}
+                  >
+                    <td data-label="名称 / 标识">
+                      <strong>{item.name}</strong>
+                      <small className="cell-secondary">
+                        {item.slug ?? item.workspaceName ?? "-"}
+                      </small>
+                    </td>
+                    <td data-label="Provider">{formatProvider(item)}</td>
                     <td data-label="状态">
-                      <StatusBadge status={agent.status} />
+                      <StatusBadge status={item.status} />
                     </td>
-                    <td data-label="Workspace">
+                    <td data-label="Workspace / Git">
                       <code className="inline-code">
-                        {agent.workspaceName || "-"}
+                        {item.workspaceName ?? "-"}
                       </code>
+                      <small className="cell-secondary">
+                        {formatAgentGitStatus(item.gitStatus)}
+                      </small>
                     </td>
-                    <td data-label="Git">{formatGitStatus(agent.gitStatus)}</td>
+                    <td data-label="更新时间">{formatDate(item.updatedAt)}</td>
                     <td className="actions" data-label="操作">
                       <button
-                        onClick={() => setSelectedId(agent.id)}
+                        onClick={() => selectAgent(item.id)}
                         type="button"
                       >
                         详情
                       </button>
-                      <button disabled={agent.status !== "ready"} type="button">
-                        运行
-                      </button>
-                      {agent.status === "init_failed" ? (
-                        <button
-                          disabled={busyId === agent.id}
-                          onClick={() => retryInitialization(agent)}
-                          type="button"
-                        >
-                          {busyId === agent.id ? "重试中" : "重试初始化"}
-                        </button>
-                      ) : null}
                     </td>
                   </tr>
                 ))}
@@ -252,85 +286,77 @@ export default function AgentsPage() {
             </table>
           </div>
 
-          {selected ? (
-            <section className="detail-panel" aria-label="Agent 详情">
-              <div className="detail-title">
-                <div>
-                  <p className="eyebrow">Agent Detail</p>
-                  <h3>{selected.name}</h3>
-                </div>
-                <StatusBadge status={selected.status} />
-              </div>
-              <dl className="detail-list">
-                <div>
-                  <dt>ID</dt>
-                  <dd>{selected.id}</dd>
-                </div>
-                <div>
-                  <dt>状态</dt>
-                  <dd>{formatStatus(selected.status)}</dd>
-                </div>
-                <div>
-                  <dt>Workspace 名称</dt>
-                  <dd>{selected.workspaceName || "-"}</dd>
-                </div>
-                <div>
-                  <dt>Workspace 路径</dt>
-                  <dd>{selected.workspacePath || "-"}</dd>
-                </div>
-                <div>
-                  <dt>Git 状态</dt>
-                  <dd>{formatGitStatus(selected.gitStatus)}</dd>
-                </div>
-                <div>
-                  <dt>失败原因</dt>
-                  <dd>{selected.initError?.message || "-"}</dd>
-                </div>
-              </dl>
-              <div className="detail-actions">
-                <button disabled={selected.status !== "ready"} type="button">
-                  运行
-                </button>
-                {selected.status === "init_failed" ? (
-                  <button
-                    disabled={busyId === selected.id}
-                    onClick={() => retryInitialization(selected)}
-                    type="button"
-                  >
-                    {busyId === selected.id ? "重试中" : "重试初始化"}
-                  </button>
-                ) : null}
-              </div>
-              <AgentSoulPanel
-                agent={selected}
-                canEdit={canEditSoul}
-                detailLoading={detailLoading}
-                draft={soulDraft}
-                error={soulError}
-                message={soulMessage}
-                onCancel={() => {
-                  setSoulDraft(savedSoul);
-                  setSoulError("");
-                  setSoulMessage("");
+          <div className="pagination agent-pagination">
+            <span>总数 {total}</span>
+            <label className="page-size-field">
+              每页
+              <select
+                aria-label="每页数量"
+                onChange={(event) => {
+                  const nextSize = Number(event.target.value);
+                  void loadAgents({ query, page: 1, pageSize: nextSize });
                 }}
-                onChange={setSoulDraft}
-                onRetry={() => void loadAgentDetail(selected.id)}
-                onSave={() => void saveSoul(selected)}
-                saved={savedSoul}
-                saving={savingSoul}
-              />
-            </section>
-          ) : null}
-        </div>
+                value={pageSize}
+              >
+                {pageSizes.map((size) => (
+                  <option key={size} value={size}>
+                    {size}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              disabled={page <= 1}
+              onClick={() =>
+                void loadAgents({ query, page: page - 1, pageSize })
+              }
+              type="button"
+            >
+              上一页
+            </button>
+            <span>
+              {page} / {pageCount}
+            </span>
+            <button
+              disabled={page >= pageCount}
+              onClick={() =>
+                void loadAgents({ query, page: page + 1, pageSize })
+              }
+              type="button"
+            >
+              下一页
+            </button>
+          </div>
+        </>
+      ) : null}
+
+      {detailError ? <Notice tone="error">{detailError}</Notice> : null}
+      {detailLoading ? <Notice>正在加载 Agent 详情...</Notice> : null}
+      {detail ? (
+        <AgentDetail
+          agent={detail}
+          enabledProviders={enabledProviders}
+          onAgentChange={(next) => {
+            setDetail(next);
+            setAgents((current) =>
+              current.map((item) =>
+                item.id === next.id ? { ...item, ...next } : item,
+              ),
+            );
+          }}
+          onRefresh={() => void loadAgentDetail(detail.id)}
+          onTabChange={setTab}
+          tab={tab}
+        />
       ) : null}
 
       {createOpen ? (
-        <AgentDialog
+        <CreateAgentDialog
+          providers={enabledProviders}
           onClose={() => setCreateOpen(false)}
-          onSubmit={async (payload) => {
-            const created = await api.createAgent(payload);
+          onCreated={async (created) => {
             setCreateOpen(false);
-            await load(created.id);
+            await loadAgents({ query, page: 1, pageSize }, created.id);
           }}
         />
       ) : null}
@@ -338,251 +364,1322 @@ export default function AgentsPage() {
   );
 }
 
-function AgentSoulPanel({
+function AgentDetail({
   agent,
-  canEdit,
-  detailLoading,
-  draft,
-  error,
-  message,
-  onCancel,
-  onChange,
-  onRetry,
-  onSave,
-  saved,
-  saving,
+  enabledProviders,
+  onAgentChange,
+  onRefresh,
+  onTabChange,
+  tab,
 }: {
   agent: Agent;
-  canEdit: boolean;
-  detailLoading: boolean;
-  draft: string;
-  error: string;
-  message: string;
-  onCancel: () => void;
-  onChange: (value: string) => void;
-  onRetry: () => void;
-  onSave: () => void;
-  saved: string;
-  saving: boolean;
+  enabledProviders: ModelProvider[];
+  onAgentChange: (agent: Agent) => void;
+  onRefresh: () => void;
+  onTabChange: (tab: DetailTab) => void;
+  tab: DetailTab;
 }) {
-  const fileStatus: AgentSoulFileStatus = agent.soulFileStatus ?? "loaded";
-  const notice = getAgentSoulNotice({
-    canEdit,
-    fileStatus,
-    fileError: agent.soulFileError,
-  });
-  const saveDisabled = isAgentSoulSaveDisabled({
-    canEdit,
-    busy: saving || detailLoading,
-    fileStatus,
-    draft,
-    saved,
-  });
-  const cancelDisabled = saving || detailLoading || draft === saved;
-  const editorDisabled =
-    !canEdit || saving || detailLoading || fileStatus === "error";
-  const draftValidationError =
-    canEdit && !detailLoading && !saving && fileStatus !== "error"
-      ? validateAgentSoulDraft(draft)
-      : null;
+  const tabs: Array<[DetailTab, string]> = [
+    ["overview", "概览"],
+    ["workspace", "Workspace"],
+    ["soul", "Soul"],
+    ["skills", "Skills"],
+    ["workflow", "Workflow"],
+  ];
 
   return (
-    <section className="soul-panel" aria-label="Soul 系统提示词">
-      <div className="soul-header">
+    <section aria-label="Agent 详情" className="agent-detail" role="region">
+      <header className="detail-title">
         <div>
-          <p className="eyebrow">Soul</p>
-          <h4>系统提示词</h4>
+          <p className="eyebrow">Agent Detail</p>
+          <h3>{agent.slug ?? agent.workspaceName ?? agent.id}</h3>
         </div>
-        <span className={`status ${soulStatusClass(fileStatus)}`}>
-          {formatSoulStatus(fileStatus, detailLoading, saving)}
-        </span>
-      </div>
-      <div className="soul-meta">
-        <span>文件名</span>
-        <code className="inline-code">soul.md</code>
-      </div>
-      {notice ? (
-        <div
-          className={`notice compact ${fileStatus === "error" ? "error" : ""}`}
-        >
-          {notice}
-        </div>
-      ) : null}
-      {error ? <div className="notice compact error">{error}</div> : null}
-      {draftValidationError ? (
-        <div className="notice compact error">{draftValidationError}</div>
-      ) : null}
-      {message ? <div className="notice compact success">{message}</div> : null}
-      <label>
-        内容
-        <textarea
-          aria-label="Soul 内容"
-          disabled={editorDisabled}
-          onChange={(event) => onChange(event.target.value)}
-          placeholder={fileStatus === "error" ? "读取失败后请重试" : ""}
-          rows={12}
-          value={draft}
-        />
-      </label>
-      <div className="detail-actions">
-        {fileStatus === "error" ? (
-          <button disabled={detailLoading} onClick={onRetry} type="button">
-            {detailLoading ? "重试中" : "重试读取"}
+        <StatusBadge status={agent.status} />
+      </header>
+      <div aria-label="Agent 配置区" className="detail-tabs" role="tablist">
+        {tabs.map(([value, label]) => (
+          <button
+            aria-selected={tab === value}
+            className={tab === value ? "active" : ""}
+            key={value}
+            onClick={() => onTabChange(value)}
+            role="tab"
+            type="button"
+          >
+            {label}
           </button>
-        ) : null}
-        <button
-          className="ghost-button inline-ghost"
-          disabled={cancelDisabled}
-          onClick={onCancel}
-          type="button"
-        >
-          取消修改
-        </button>
-        <button disabled={saveDisabled} onClick={onSave} type="button">
-          {saving ? "保存中" : "保存"}
-        </button>
+        ))}
       </div>
+
+      {tab === "overview" ? (
+        <OverviewPanel
+          agent={agent}
+          enabledProviders={enabledProviders}
+          onAgentChange={onAgentChange}
+        />
+      ) : null}
+      {tab === "workspace" ? (
+        <WorkspacePanel
+          agent={agent}
+          onAgentChange={onAgentChange}
+          onRefresh={onRefresh}
+        />
+      ) : null}
+      {tab === "soul" ? <SoulPanel agent={agent} /> : null}
+      {tab === "skills" ? <SkillsPanel agent={agent} /> : null}
+      {tab === "workflow" ? <WorkflowPanel agent={agent} /> : null}
     </section>
   );
 }
 
-function StatusBadge({ status }: { status: AgentStatus }) {
-  const className =
-    status === "ready"
-      ? "status on"
-      : status === "init_failed"
-        ? "status danger-status"
-        : "status off";
-  return <span className={className}>{formatStatus(status)}</span>;
+function OverviewPanel({
+  agent,
+  enabledProviders,
+  onAgentChange,
+}: {
+  agent: Agent;
+  enabledProviders: ModelProvider[];
+  onAgentChange: (agent: Agent) => void;
+}) {
+  const [name, setName] = useState(agent.name);
+  const [providerId, setProviderId] = useState(agent.modelProviderId ?? "");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const dirty =
+    name.trim() !== agent.name || providerId !== (agent.modelProviderId ?? "");
+
+  useEffect(() => {
+    setName(agent.name);
+    setProviderId(agent.modelProviderId ?? "");
+  }, [agent.id, agent.name, agent.modelProviderId]);
+
+  async function save() {
+    if (!name.trim() || agent.revision === undefined) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const updated = await api.updateAgent(agent.id, {
+        name: name.trim(),
+        modelProviderId: providerId || null,
+        expectedRevision: agent.revision,
+      });
+      onAgentChange(updated);
+      setMessage("基础配置已保存");
+    } catch {
+      setMessage("保存失败，配置未变；请刷新后重试");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="detail-section">
+      <div className="form-grid two-column">
+        <label>
+          Agent 名称
+          <input
+            aria-label="Agent 名称"
+            onChange={(event) => setName(event.target.value)}
+            value={name}
+          />
+        </label>
+        <label>
+          Agent Provider
+          <select
+            aria-label="Agent Provider"
+            onChange={(event) => setProviderId(event.target.value)}
+            value={providerId}
+          >
+            <option value="">使用全局默认 Provider</option>
+            {enabledProviders.map((provider) => (
+              <option key={provider.id} value={provider.id}>
+                {provider.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <dl className="detail-list compact-detail-list">
+        <div>
+          <dt>ID</dt>
+          <dd>{agent.id}</dd>
+        </div>
+        <div>
+          <dt>标识</dt>
+          <dd>{agent.slug ?? "-"}</dd>
+        </div>
+        <div>
+          <dt>Revision</dt>
+          <dd>{agent.revision ?? "-"}</dd>
+        </div>
+        <div>
+          <dt>Workspace</dt>
+          <dd>{agent.workspacePath ?? "-"}</dd>
+        </div>
+      </dl>
+      {message ? (
+        <Notice tone={message.includes("已保存") ? "success" : "error"}>
+          {message}
+        </Notice>
+      ) : null}
+      <div className="detail-actions">
+        <button
+          disabled={!dirty || busy || !name.trim()}
+          onClick={() => void save()}
+          type="button"
+        >
+          {busy ? "保存中" : "保存基础配置"}
+        </button>
+      </div>
+    </div>
+  );
 }
 
-function AgentDialog({
-  onClose,
-  onSubmit,
+function WorkspacePanel({
+  agent,
+  onAgentChange,
+  onRefresh,
 }: {
-  onClose: () => void;
-  onSubmit: (payload: {
-    name: string;
-    slug?: string;
-    modelProvider?: string;
-    modelSecretRef?: string;
-    soul?: string;
-  }) => Promise<void>;
+  agent: Agent;
+  onAgentChange: (agent: Agent) => void;
+  onRefresh: () => void;
 }) {
-  const [name, setName] = useState("");
-  const [slug, setSlug] = useState("");
-  const [modelProvider, setModelProvider] = useState("");
-  const [modelSecretRef, setModelSecretRef] = useState("");
-  const [soul, setSoul] = useState("");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function retry() {
+    setBusy(true);
     setError("");
-    if (name.trim().length < 2) {
-      setError("名称至少 2 位");
-      return;
-    }
     try {
-      await onSubmit({
-        name: name.trim(),
-        slug: slug.trim() || undefined,
-        modelProvider: modelProvider.trim() || undefined,
-        modelSecretRef: modelSecretRef.trim() || undefined,
-        soul: soul.trim() || undefined,
-      });
+      onAgentChange(await api.retryAgentInitialization(agent.id));
     } catch {
-      setError("创建失败，请重试");
+      setError("初始化重试失败，请刷新状态后再试");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="detail-section">
+      <dl className="detail-list compact-detail-list">
+        <div>
+          <dt>初始化状态</dt>
+          <dd>{formatAgentStatus(agent.status)}</dd>
+        </div>
+        <div>
+          <dt>Git</dt>
+          <dd>{formatAgentGitStatus(agent.gitStatus)}</dd>
+        </div>
+        <div>
+          <dt>Workspace 路径</dt>
+          <dd>{agent.workspacePath ?? "-"}</dd>
+        </div>
+        <div>
+          <dt>错误代码</dt>
+          <dd>{agent.initError?.code ?? "-"}</dd>
+        </div>
+        <div>
+          <dt>安全摘要</dt>
+          <dd>{agent.initError?.message ?? "-"}</dd>
+        </div>
+      </dl>
+      <ul className="file-status-list">
+        {(agent.workspaceFiles ?? []).map((file) => (
+          <li
+            key={file.name}
+            className={file.present ? "file-present" : "file-missing"}
+          >
+            {file.name} {file.present ? "存在" : "缺失"}
+          </li>
+        ))}
+      </ul>
+      {error ? <Notice tone="error">{error}</Notice> : null}
+      <div className="detail-actions">
+        <button
+          className="ghost-button inline-ghost"
+          onClick={onRefresh}
+          type="button"
+        >
+          刷新 Workspace
+        </button>
+        {agent.status === "init_failed" ? (
+          <button disabled={busy} onClick={() => void retry()} type="button">
+            {busy ? "重试中" : "重试初始化"}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function SoulPanel({ agent }: { agent: Agent }) {
+  const [soul, setSoul] = useState<AgentSoul | null>(null);
+  const [draft, setDraft] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  async function load() {
+    setLoading(true);
+    setMessage("");
+    try {
+      const next = await api.getAgentSoul(agent.id);
+      setSoul(next);
+      setDraft(next.content);
+    } catch {
+      setMessage("Soul 加载失败，请重试");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, [agent.id]);
+  const validation = soul ? isSoulDraftValid(draft, soul.maxBytes) : null;
+
+  async function save() {
+    if (!soul || !validation?.valid) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const next = await api.saveAgentSoul(agent.id, draft, soul.revision);
+      setSoul(next);
+      setDraft(next.content);
+      setMessage("Soul 已保存");
+    } catch {
+      setMessage("Soul 保存失败，编辑内容已保留");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (loading) return <Notice>正在加载 Soul...</Notice>;
+  if (!soul)
+    return (
+      <div className="detail-section">
+        <Notice tone="error">{message}</Notice>
+        <button onClick={() => void load()} type="button">
+          重试读取
+        </button>
+      </div>
+    );
+
+  const ready = agent.status === "ready";
+  return (
+    <div className="detail-section">
+      {soul.missing ? (
+        <Notice>当前 soul.md 缺失，保存后将重新创建</Notice>
+      ) : null}
+      {!ready ? <Notice>Agent 尚未就绪，配置写入已禁用</Notice> : null}
+      <label>
+        Soul 内容
+        <textarea
+          aria-label="Soul 内容"
+          disabled={!ready || busy}
+          onChange={(event) => setDraft(event.target.value)}
+          rows={14}
+          value={draft}
+        />
+      </label>
+      <div className="editor-meta">
+        <span>
+          {getSoulByteLength(draft)} / {soul.maxBytes} 字节
+        </span>
+        <span>Revision {soul.revision}</span>
+      </div>
+      {validation && !validation.valid ? (
+        <Notice tone="error">{validation.message}</Notice>
+      ) : null}
+      {message ? (
+        <Notice tone={message.includes("已保存") ? "success" : "error"}>
+          {message}
+        </Notice>
+      ) : null}
+      <div className="detail-actions">
+        <button
+          className="ghost-button inline-ghost"
+          disabled={busy || draft === soul.content}
+          onClick={() => setDraft(soul.content)}
+          type="button"
+        >
+          取消修改
+        </button>
+        <button
+          disabled={
+            !ready || busy || draft === soul.content || !validation?.valid
+          }
+          onClick={() => void save()}
+          type="button"
+        >
+          {busy ? "保存中" : "保存 Soul"}
+        </button>
+      </div>
+      <p className="help-text">保存影响后续新 run；已启动 run 保持原快照。</p>
+    </div>
+  );
+}
+
+function SkillsPanel({ agent }: { agent: Agent }) {
+  const [state, setState] = useState<AgentSkillState | null>(null);
+  const [change, setChange] = useState<AgentSkillChange | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [installOpen, setInstallOpen] = useState(false);
+  const [updateTarget, setUpdateTarget] = useState<AgentSkill | null>(null);
+  const [error, setError] = useState("");
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      setState(await api.listAgentSkills(agent.id));
+    } catch {
+      setError("Skills 加载失败，请重试");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, [agent.id]);
+
+  const changeTerminal = change ? isSkillChangeTerminal(change) : true;
+  useEffect(() => {
+    if (!change || changeTerminal) return;
+
+    let cancelled = false;
+    let elapsedMs = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const changeId = change.changeId;
+    const schedule = () => {
+      const delay = getAgentOperationPollDelay(elapsedMs);
+      timer = setTimeout(async () => {
+        elapsedMs += delay;
+        try {
+          const next = await api.getAgentSkillChange(agent.id, changeId);
+          if (cancelled) return;
+          setChange(next);
+          if (isSkillChangeTerminal(next)) {
+            await load();
+          } else if (elapsedMs < AGENT_OPERATION_POLL_TIMEOUT_MS) {
+            schedule();
+          } else {
+            setError("Skill 变更仍在进行，可手动刷新状态");
+          }
+        } catch {
+          if (!cancelled && elapsedMs < AGENT_OPERATION_POLL_TIMEOUT_MS) {
+            schedule();
+          } else if (!cancelled) {
+            setError("Skill 状态刷新失败，请手动重试");
+          }
+        }
+      }, delay);
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [agent.id, change?.changeId, changeTerminal]);
+  if (loading) return <Notice>正在加载 Skills...</Notice>;
+
+  return (
+    <div className="detail-section">
+      {agent.status !== "ready" ? (
+        <Notice>Agent 尚未就绪，配置写入已禁用</Notice>
+      ) : null}
+      {error ? <Notice tone="error">{error}</Notice> : null}
+      <div className="section-heading">
+        <div>
+          <h4>已安装 Skills</h4>
+          <p>仅可从受控 Catalog 选择不可变版本。</p>
+        </div>
+        <button
+          disabled={agent.status !== "ready"}
+          onClick={() => setInstallOpen(true)}
+          type="button"
+        >
+          安装 Skill
+        </button>
+      </div>
+      {state?.skills.length ? (
+        <div className="table-wrap nested-table">
+          <table>
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>版本</th>
+                <th>来源</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {state.skills.map((skill) => (
+                <tr key={skill.name}>
+                  <td data-label="名称">{skill.name}</td>
+                  <td data-label="版本">{skill.version}</td>
+                  <td data-label="来源">{skill.sourceId}</td>
+                  <td className="actions" data-label="操作">
+                    <button
+                      disabled={
+                        skill.systemRequired || agent.status !== "ready"
+                      }
+                      onClick={() => setUpdateTarget(skill)}
+                      type="button"
+                    >
+                      更新
+                    </button>
+                    <button
+                      disabled={
+                        skill.systemRequired || agent.status !== "ready"
+                      }
+                      onClick={async () => {
+                        try {
+                          setError("");
+                          setChange(
+                            await api.removeAgentSkill(agent.id, skill.name),
+                          );
+                          await load();
+                        } catch {
+                          setError("Skill 移除失败，请重试");
+                        }
+                      }}
+                      type="button"
+                    >
+                      移除
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="empty-state">暂无已安装 Skill</div>
+      )}
+      {state ? (
+        <StatusSummary
+          changeStatus={state.changeStatus}
+          reloadStatus={state.reloadStatus}
+          auditStatus={state.auditStatus}
+          rollbackResult={state.rollbackResult}
+          failedStage={state.failedStage}
+        />
+      ) : null}
+      {change ? (
+        <StatusSummary
+          changeStatus={change.changeStatus}
+          reloadStatus={change.reloadStatus}
+          auditStatus={change.auditStatus}
+          rollbackResult={change.rollbackResult}
+          failedStage={change.failedStage}
+        />
+      ) : null}
+      {installOpen ? (
+        <SkillInstallDialog
+          agentId={agent.id}
+          onClose={() => setInstallOpen(false)}
+          onInstalled={async (next) => {
+            setChange(next);
+            setInstallOpen(false);
+            await load();
+          }}
+        />
+      ) : null}
+      {updateTarget ? (
+        <SkillInstallDialog
+          agentId={agent.id}
+          initialSkill={updateTarget}
+          onClose={() => setUpdateTarget(null)}
+          onInstalled={async (next) => {
+            setChange(next);
+            setUpdateTarget(null);
+            await load();
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function SkillInstallDialog({
+  agentId,
+  initialSkill,
+  onClose,
+  onInstalled,
+}: {
+  agentId: string;
+  initialSkill?: AgentSkill;
+  onClose: () => void;
+  onInstalled: (change: AgentSkillChange) => Promise<void>;
+}) {
+  const [sources, setSources] = useState<SkillCatalogSource[]>([]);
+  const [skills, setSkills] = useState<SkillCatalogSkill[]>([]);
+  const [versions, setVersions] = useState<SkillCatalogVersion[]>([]);
+  const [sourceId, setSourceId] = useState(initialSkill?.sourceId ?? "");
+  const [skillId, setSkillId] = useState(initialSkill?.name ?? "");
+  const [version, setVersion] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api
+      .listSkillCatalogSources({ page: 1, pageSize: 100 })
+      .then((result) => setSources(result.items))
+      .catch(() => setError("Catalog 来源加载失败"));
+  }, []);
+  useEffect(() => {
+    setSkills([]);
+    setVersions([]);
+    setVersion("");
+    if (sourceId)
+      api
+        .listSkillCatalogSkills(sourceId, { page: 1, pageSize: 100 })
+        .then((result) => setSkills(result.items))
+        .catch(() => setError("Skill 列表加载失败"));
+  }, [sourceId]);
+  useEffect(() => {
+    setVersions([]);
+    setVersion("");
+    if (sourceId && skillId)
+      api
+        .listSkillCatalogVersions(sourceId, skillId, { page: 1, pageSize: 100 })
+        .then((result) => setVersions(result.items))
+        .catch(() => setError("版本列表加载失败"));
+  }, [sourceId, skillId]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const source = sources.find((item) => item.id === sourceId);
+    const skill = skills.find((item) => item.id === skillId);
+    if (!source || !skill || !version) return;
+    setBusy(true);
+    try {
+      const payload = {
+        skillName: skill.name,
+        sourceId,
+        sourceType: source.sourceType,
+        version,
+      };
+      await onInstalled(
+        initialSkill
+          ? await api.updateAgentSkill(agentId, payload)
+          : await api.installAgentSkill(agentId, payload),
+      );
+    } catch {
+      setError(
+        initialSkill
+          ? "更新失败，请检查状态后重试"
+          : "安装失败，请检查状态后重试",
+      );
+      setBusy(false);
     }
   }
 
   return (
     <div className="modal-backdrop">
-      <form className="modal wide-modal" onSubmit={submit}>
-        <h3>新增 Agent</h3>
+      <form className="modal" onSubmit={submit}>
+        <h3>{initialSkill ? "更新 Skill" : "安装 Skill"}</h3>
         <label>
-          名称
-          <input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
+          Skill 来源
+          <select
+            aria-label="Skill 来源"
+            onChange={(event) => {
+              setSourceId(event.target.value);
+              setSkillId("");
+              setVersion("");
+            }}
+            value={sourceId}
+          >
+            <option value="">请选择来源</option>
+            {sources.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
         </label>
         <label>
-          标识
-          <input
-            value={slug}
-            onChange={(event) => setSlug(event.target.value)}
-            placeholder="可选"
-          />
+          Skill
+          <select
+            aria-label="Skill"
+            disabled={!sourceId}
+            onChange={(event) => {
+              setSkillId(event.target.value);
+              setVersion("");
+            }}
+            value={skillId}
+          >
+            <option value="">请选择 Skill</option>
+            {skills.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
         </label>
         <label>
-          模型提供方
-          <input
-            value={modelProvider}
-            onChange={(event) => setModelProvider(event.target.value)}
-          />
+          Skill 版本
+          <select
+            aria-label="Skill 版本"
+            disabled={!skillId}
+            onChange={(event) => setVersion(event.target.value)}
+            value={version}
+          >
+            <option value="">请选择不可变版本</option>
+            {versions.map((item) => (
+              <option key={item.immutableRef} value={item.version}>
+                {item.version}
+                {item.isLatest ? "（最新）" : ""}
+              </option>
+            ))}
+          </select>
         </label>
-        <label>
-          Secret 引用
-          <input
-            value={modelSecretRef}
-            onChange={(event) => setModelSecretRef(event.target.value)}
-          />
-        </label>
-        <label>
-          Soul
-          <textarea
-            value={soul}
-            onChange={(event) => setSoul(event.target.value)}
-            rows={6}
-          />
-        </label>
-        {error ? <p className="error-text">{error}</p> : null}
+        {error ? <Notice tone="error">{error}</Notice> : null}
         <div className="modal-actions">
-          <button type="button" onClick={onClose}>
+          <button
+            className="ghost-button inline-ghost"
+            onClick={onClose}
+            type="button"
+          >
             取消
           </button>
-          <button type="submit">创建</button>
+          <button
+            disabled={busy || !sourceId || !skillId || !version}
+            type="submit"
+          >
+            {busy ? "处理中" : initialSkill ? "确认更新" : "确认安装"}
+          </button>
         </div>
       </form>
     </div>
   );
 }
 
-function formatStatus(status: AgentStatus) {
-  return statusText[status] ?? status;
+function WorkflowPanel({ agent }: { agent: Agent }) {
+  const [items, setItems] = useState<AgentWorkflow[]>([]);
+  const [editing, setEditing] = useState<AgentWorkflow | null>(null);
+  const [source, setSource] = useState("");
+  const [versions, setVersions] = useState<AgentWorkflowVersion[]>([]);
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    try {
+      setItems(await api.listAgentWorkflows(agent.id));
+    } catch {
+      setMessage("Workflow 加载失败，请重试");
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    void load();
+  }, [agent.id]);
+
+  useEffect(() => {
+    if (!editing || editing.reloadStatus !== "loading") return;
+
+    let cancelled = false;
+    let elapsedMs = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const workflowKey = editing.workflowKey;
+    const schedule = () => {
+      const delay = getAgentOperationPollDelay(elapsedMs);
+      timer = setTimeout(async () => {
+        elapsedMs += delay;
+        try {
+          const next = await api.getAgentWorkflow(agent.id, workflowKey);
+          if (cancelled) return;
+          setEditing((current) =>
+            current?.workflowKey === workflowKey
+              ? { ...next, source: next.source ?? current.source }
+              : current,
+          );
+          setItems((current) =>
+            current.map((item) =>
+              item.workflowKey === workflowKey ? next : item,
+            ),
+          );
+          if (
+            next.reloadStatus === "loading" &&
+            elapsedMs < AGENT_OPERATION_POLL_TIMEOUT_MS
+          ) {
+            schedule();
+          } else if (next.reloadStatus === "loading") {
+            setMessage("Workflow reload 仍在进行，可手动刷新");
+          } else {
+            setMessage(
+              next.reloadStatus === "succeeded"
+                ? "Workflow reload 已完成"
+                : "Workflow reload 失败，active 版本未变",
+            );
+          }
+        } catch {
+          if (!cancelled && elapsedMs < AGENT_OPERATION_POLL_TIMEOUT_MS) {
+            schedule();
+          } else if (!cancelled) {
+            setMessage("Workflow reload 状态刷新失败，请手动重试");
+          }
+        }
+      }, delay);
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [agent.id, editing?.reloadStatus, editing?.workflowKey]);
+
+  async function edit(workflowKey: string) {
+    setMessage("");
+    const [detail, history] = await Promise.all([
+      api.getAgentWorkflow(agent.id, workflowKey),
+      api.listAgentWorkflowVersions(agent.id, workflowKey),
+    ]);
+    setEditing(detail);
+    setSource(detail.source ?? "");
+    setVersions(history);
+  }
+
+  async function save(reload: boolean) {
+    if (!editing) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const saved = await api.saveAgentWorkflowDraft(
+        agent.id,
+        editing.workflowKey,
+        {
+          source,
+          extension: editing.extension ?? "ts",
+          expectedRevision: editing.revision,
+        },
+      );
+      const next = reload
+        ? await api.reloadAgentWorkflow(
+            agent.id,
+            editing.workflowKey,
+            saved.draftHash ?? undefined,
+          )
+        : saved;
+      setEditing({ ...next, source });
+      setMessage(reload ? "Workflow 已保存并 reload" : "Workflow 草稿已保存");
+      await load();
+    } catch {
+      setMessage("Workflow 保存失败，草稿内容已保留");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (loading) return <Notice>正在加载 Workflow...</Notice>;
+  return (
+    <div className="detail-section">
+      {agent.status !== "ready" ? (
+        <Notice>Agent 尚未就绪，配置写入已禁用</Notice>
+      ) : null}
+      <div className="section-heading">
+        <div>
+          <h4>Workflows</h4>
+          <p>草稿与当前生效版本分离。</p>
+        </div>
+        <div className="detail-actions">
+          <button
+            className="ghost-button inline-ghost"
+            onClick={() => void load()}
+            type="button"
+          >
+            刷新
+          </button>
+          <button
+            disabled={agent.status !== "ready"}
+            onClick={() => setCreateOpen(true)}
+            type="button"
+          >
+            新建 Workflow
+          </button>
+        </div>
+      </div>
+      <div className="workflow-layout">
+        <div className="workflow-list">
+          {items.length ? (
+            items.map((item) => (
+              <button
+                aria-label={`编辑 ${item.workflowKey}`}
+                className={
+                  editing?.workflowKey === item.workflowKey ? "active" : ""
+                }
+                key={item.workflowKey}
+                onClick={() => void edit(item.workflowKey)}
+                type="button"
+              >
+                <strong>{item.workflowKey}</strong>
+                <span>{formatWorkflowReloadStatus(item.reloadStatus)}</span>
+              </button>
+            ))
+          ) : (
+            <div className="empty-state">暂无 Workflow</div>
+          )}
+        </div>
+        {editing ? (
+          <div className="workflow-editor">
+            <div className="editor-title">
+              <div>
+                <strong>{editing.workflowKey}</strong>
+                <small>
+                  draft {shortHash(editing.draftHash)} · active{" "}
+                  {shortHash(editing.activeHash)}
+                </small>
+              </div>
+              <StatusPill
+                label={formatWorkflowReloadStatus(editing.reloadStatus)}
+                tone={editing.reloadStatus === "failed" ? "danger" : "neutral"}
+              />
+            </div>
+            <label>
+              Workflow 源码
+              <textarea
+                aria-label="Workflow 源码"
+                disabled={busy || agent.status !== "ready"}
+                onChange={(event) => setSource(event.target.value)}
+                rows={16}
+                value={source}
+              />
+            </label>
+            <div className="detail-actions">
+              <button
+                className="ghost-button inline-ghost"
+                disabled={busy}
+                onClick={async () => {
+                  const result = await api.validateAgentWorkflow(
+                    agent.id,
+                    editing.workflowKey,
+                    { source, extension: editing.extension ?? "ts" },
+                  );
+                  setMessage(
+                    result.valid
+                      ? "校验通过"
+                      : (result.errors?.join("；") ?? "校验失败"),
+                  );
+                }}
+                type="button"
+              >
+                校验
+              </button>
+              <button
+                disabled={
+                  busy || agent.status !== "ready" || source === editing.source
+                }
+                onClick={() => void save(false)}
+                type="button"
+              >
+                保存 draft
+              </button>
+              <button
+                disabled={
+                  busy || agent.status !== "ready" || source === editing.source
+                }
+                onClick={() => void save(true)}
+                type="button"
+              >
+                保存并 reload
+              </button>
+            </div>
+            {versions.length ? (
+              <details>
+                <summary>历史版本（{versions.length}）</summary>
+                <ul className="version-list">
+                  {versions.map((version) => (
+                    <li key={version.id}>
+                      <code>{shortHash(version.sourceHash)}</code>
+                      <button
+                        disabled={busy || agent.status !== "ready"}
+                        onClick={async () => {
+                          setEditing(
+                            await api.rollbackAgentWorkflow(
+                              agent.id,
+                              editing.workflowKey,
+                              version.id,
+                            ),
+                          );
+                          setMessage("Workflow 已回滚");
+                        }}
+                        type="button"
+                      >
+                        回滚到此版本
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+          </div>
+        ) : (
+          <div className="empty-state">选择一个 Workflow 查看源码</div>
+        )}
+      </div>
+      {message ? (
+        <Notice tone={message.includes("失败") ? "error" : "success"}>
+          {message}
+        </Notice>
+      ) : null}
+      {createOpen ? (
+        <WorkflowCreateDialog
+          agentId={agent.id}
+          onClose={() => setCreateOpen(false)}
+          onCreated={async (next) => {
+            setCreateOpen(false);
+            await load();
+            await edit(next.workflowKey);
+          }}
+        />
+      ) : null}
+    </div>
+  );
 }
 
-function formatGitStatus(status: AgentGitStatus) {
-  return gitStatusText[status] ?? status;
+function WorkflowCreateDialog({
+  agentId,
+  onClose,
+  onCreated,
+}: {
+  agentId: string;
+  onClose: () => void;
+  onCreated: (workflow: AgentWorkflow) => Promise<void>;
+}) {
+  const [key, setKey] = useState("");
+  const [source, setSource] = useState("export default {}\n");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const keyError = key ? validateWorkflowKey(key) : null;
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const validation = validateWorkflowKey(key);
+    if (validation) {
+      setError(validation);
+      return;
+    }
+    setBusy(true);
+    try {
+      await onCreated(
+        await api.createAgentWorkflow(agentId, {
+          workflowKey: key,
+          source,
+          extension: "ts",
+        }),
+      );
+    } catch {
+      setError("Workflow 创建失败，请重试");
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="modal-backdrop">
+      <form className="modal wide-modal" onSubmit={submit}>
+        <h3>新建 Workflow</h3>
+        <label>
+          Workflow key
+          <input
+            aria-label="Workflow key"
+            onChange={(event) => setKey(event.target.value)}
+            value={key}
+          />
+        </label>
+        <label>
+          初始源码
+          <textarea
+            aria-label="初始 Workflow 源码"
+            onChange={(event) => setSource(event.target.value)}
+            rows={10}
+            value={source}
+          />
+        </label>
+        {keyError || error ? (
+          <Notice tone="error">{keyError ?? error}</Notice>
+        ) : null}
+        <div className="modal-actions">
+          <button
+            className="ghost-button inline-ghost"
+            onClick={onClose}
+            type="button"
+          >
+            取消
+          </button>
+          <button
+            disabled={
+              busy || Boolean(validateWorkflowKey(key)) || !source.trim()
+            }
+            type="submit"
+          >
+            {busy ? "创建中" : "创建 Workflow"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
 }
 
-function formatSoulStatus(
-  status: AgentSoulFileStatus,
-  loading: boolean,
-  saving: boolean,
-) {
-  if (saving) {
-    return "保存中";
+function CreateAgentDialog({
+  providers,
+  onClose,
+  onCreated,
+}: {
+  providers: ModelProvider[];
+  onClose: () => void;
+  onCreated: (agent: Agent) => Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [providerId, setProviderId] = useState("");
+  const [idempotencyKey, setIdempotencyKey] = useState(createIdempotencyKey);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const hasDefault = providers.some((provider) => provider.isDefault);
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (name.trim().length < 2) {
+      setError("名称至少 2 位");
+      return;
+    }
+    if (!slug.trim()) {
+      setError("请输入标识");
+      return;
+    }
+    if (!providerId && !hasDefault) {
+      setError("请选择可用 Provider");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await onCreated(
+        await api.createAgent(
+          {
+            name: name.trim(),
+            slug: slug.trim(),
+            modelProviderId: providerId || null,
+          },
+          idempotencyKey,
+        ),
+      );
+    } catch {
+      setError("创建失败，输入已保留；可安全重试");
+      setBusy(false);
+    }
   }
-  if (loading) {
-    return "加载中";
-  }
-  if (status === "missing") {
-    return "缺失";
-  }
-  if (status === "error") {
-    return "错误";
-  }
-  return "已加载";
+  return (
+    <div className="modal-backdrop">
+      <form className="modal" onSubmit={submit}>
+        <h3>新增 Agent</h3>
+        <label>
+          名称
+          <input
+            aria-label="名称"
+            onChange={(event) => {
+              setName(event.target.value);
+              setIdempotencyKey(createIdempotencyKey());
+            }}
+            value={name}
+          />
+        </label>
+        <label>
+          标识
+          <input
+            aria-label="标识"
+            onChange={(event) => {
+              setSlug(event.target.value);
+              setIdempotencyKey(createIdempotencyKey());
+            }}
+            placeholder="创建后不可修改"
+            value={slug}
+          />
+        </label>
+        <label>
+          Provider
+          <select
+            aria-label="Provider"
+            onChange={(event) => {
+              setProviderId(event.target.value);
+              setIdempotencyKey(createIdempotencyKey());
+            }}
+            value={providerId}
+          >
+            <option value="">使用全局默认 Provider</option>
+            {providers.map((provider) => (
+              <option key={provider.id} value={provider.id}>
+                {provider.name}
+                {provider.isDefault ? "（全局默认）" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="help-text">
+          Workspace 将创建于 .homelab/agents/{slug || "{slug}"}--系统生成/
+        </p>
+        {!providers.length ? (
+          <Notice tone="error">暂无启用 Provider，请先配置模型提供方</Notice>
+        ) : null}
+        {error ? <Notice tone="error">{error}</Notice> : null}
+        <div className="modal-actions">
+          <button
+            className="ghost-button inline-ghost"
+            onClick={onClose}
+            type="button"
+          >
+            取消
+          </button>
+          <button disabled={busy || !providers.length} type="submit">
+            {busy ? "创建中" : "创建 Agent"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
 }
 
-function soulStatusClass(status: AgentSoulFileStatus) {
-  if (status === "error") {
-    return "danger-status";
+function StatusSummary({
+  changeStatus,
+  reloadStatus,
+  auditStatus,
+  rollbackResult,
+  failedStage,
+}: {
+  changeStatus: string;
+  reloadStatus: string;
+  auditStatus: string;
+  rollbackResult: string;
+  failedStage: string | null;
+}) {
+  return (
+    <dl className="status-summary">
+      <div>
+        <dt>变更</dt>
+        <dd>{formatSkillChangeStatus(changeStatus)}</dd>
+      </div>
+      <div>
+        <dt>Reload</dt>
+        <dd>{formatSkillReloadStatus(reloadStatus)}</dd>
+      </div>
+      <div>
+        <dt>审计</dt>
+        <dd>{auditStatus}</dd>
+      </div>
+      <div>
+        <dt>回滚</dt>
+        <dd>{rollbackResult}</dd>
+      </div>
+      <div>
+        <dt>失败阶段</dt>
+        <dd>{failedStage ?? "-"}</dd>
+      </div>
+    </dl>
+  );
+}
+
+function Notice({
+  children,
+  tone = "neutral",
+}: {
+  children: React.ReactNode;
+  tone?: "neutral" | "error" | "success";
+}) {
+  return (
+    <div
+      aria-live="polite"
+      className={`notice compact ${tone === "neutral" ? "" : tone}`}
+    >
+      {children}
+    </div>
+  );
+}
+function StatusBadge({ status }: { status: string }) {
+  const valid =
+    status === "ready" || status === "initializing" || status === "init_failed";
+  return (
+    <span
+      className={`status ${status === "ready" ? "on" : status === "init_failed" || !valid ? "danger-status" : "off"}`}
+    >
+      {formatAgentStatus(status)}
+    </span>
+  );
+}
+function StatusPill({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: "danger" | "neutral";
+}) {
+  return (
+    <span className={`status ${tone === "danger" ? "danger-status" : "off"}`}>
+      {label}
+    </span>
+  );
+}
+function formatProvider(agent: Agent) {
+  const provider = agent.providerSummary;
+  if (!provider || provider.source === "invalid") return "模型配置异常";
+  if (provider.source === "default")
+    return `全局默认 · ${provider.name ?? "-"}`;
+  return provider.name ?? "专属 Provider";
+}
+function formatDate(value?: string) {
+  return value ? new Date(value).toLocaleString("zh-CN") : "-";
+}
+function shortHash(value: string | null) {
+  return value ? value.slice(0, 8) : "-";
+}
+function createIdempotencyKey() {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `agent-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function syncAgentListUrl({
+  query,
+  page,
+  pageSize,
+}: {
+  query: string;
+  page: number;
+  pageSize: number;
+}) {
+  if (typeof window === "undefined") return;
+  const params = new URLSearchParams();
+  if (query) params.set("query", query);
+  params.set("page", String(page));
+  params.set("pageSize", String(pageSize));
+  window.history.replaceState(
+    null,
+    "",
+    `${window.location.pathname}?${params}`,
+  );
+}
+
+function readAgentListState(): {
+  query: string;
+  page: number;
+  pageSize: (typeof pageSizes)[number];
+} {
+  const fallback = { query: "", page: 1, pageSize: 20 as const };
+  if (typeof window === "undefined") {
+    return fallback;
   }
-  if (status === "missing") {
-    return "off";
-  }
-  return "on";
+
+  const params = new URLSearchParams(window.location.search);
+  const rawPage = Number(params.get("page"));
+  const rawPageSize = Number(params.get("pageSize"));
+
+  return {
+    query: (params.get("query") ?? "").trim(),
+    page: Number.isInteger(rawPage) && rawPage > 0 ? rawPage : fallback.page,
+    pageSize: pageSizes.includes(rawPageSize as (typeof pageSizes)[number])
+      ? (rawPageSize as (typeof pageSizes)[number])
+      : fallback.pageSize,
+  };
 }
