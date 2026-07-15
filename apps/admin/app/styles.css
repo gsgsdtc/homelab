@@ -908,6 +908,68 @@ button.danger,
     width: 100%;
   }
 
+  .agent-table table {
+    display: table;
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  .agent-table thead {
+    position: static;
+    display: table-header-group;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip: auto;
+    white-space: normal;
+  }
+
+  .agent-table tbody {
+    display: table-row-group;
+  }
+
+  .agent-table tr {
+    display: table-row;
+    border: 0;
+    border-radius: 0;
+    margin: 0;
+    padding: 0;
+  }
+
+  .agent-table th,
+  .agent-table td {
+    display: table-cell;
+    min-width: 0;
+    padding: 10px 8px;
+    vertical-align: middle;
+  }
+
+  .agent-table td::before {
+    content: none;
+  }
+
+  .agent-table .agent-column-secondary {
+    display: none;
+  }
+
+  .agent-table .agent-column-name {
+    width: auto;
+    overflow-wrap: anywhere;
+  }
+
+  .agent-table .agent-column-status {
+    width: 5.75rem;
+  }
+
+  .agent-table .agent-column-action {
+    width: 4.75rem;
+  }
+
+  .agent-table .agent-column-action button {
+    min-width: 0;
+    padding-inline: 6px;
+  }
+
   .modal-backdrop {
     align-items: end;
     padding: 12px;

@@ -97,7 +97,10 @@ const page = (items: Agent[] = [agent], pageNumber = 1, pageSize = 20) => ({
 });
 
 describe("AgentsPage", () => {
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     window.history.replaceState(null, "", "/agents");
@@ -163,6 +166,30 @@ describe("AgentsPage", () => {
       }),
     );
     expect(window.location.search).toBe("?query=ops&page=1&pageSize=20");
+  });
+
+  it("prioritizes readable name, status, and primary action columns at 390x844", async () => {
+    vi.stubGlobal("innerWidth", 390);
+    vi.stubGlobal("innerHeight", 844);
+
+    await renderReadyPage();
+
+    const table = screen.getByRole("table");
+    expect(
+      within(table).getByRole("columnheader", { name: "名称 / 标识" }),
+    ).toHaveClass("agent-column-name");
+    expect(
+      within(table).getByRole("columnheader", { name: "状态" }),
+    ).toHaveClass("agent-column-status");
+    expect(
+      within(table).getByRole("columnheader", { name: "操作" }),
+    ).toHaveClass("agent-column-action");
+
+    for (const name of ["Provider", "Workspace / Git", "更新时间"]) {
+      expect(within(table).getByRole("columnheader", { name })).toHaveClass(
+        "agent-column-secondary",
+      );
+    }
   });
 
   it("keeps stale rows visible when refresh fails", async () => {

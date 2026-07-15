@@ -249,12 +249,12 @@ export default function AgentsPage() {
             <table>
               <thead>
                 <tr>
-                  <th>名称 / 标识</th>
-                  <th>Provider</th>
-                  <th>状态</th>
-                  <th>Workspace / Git</th>
-                  <th>更新时间</th>
-                  <th>操作</th>
+                  <th className="agent-column-name">名称 / 标识</th>
+                  <th className="agent-column-secondary">Provider</th>
+                  <th className="agent-column-status">状态</th>
+                  <th className="agent-column-secondary">Workspace / Git</th>
+                  <th className="agent-column-secondary">更新时间</th>
+                  <th className="agent-column-action">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -263,17 +263,25 @@ export default function AgentsPage() {
                     className={item.id === selectedId ? "selected-row" : ""}
                     key={item.id}
                   >
-                    <td data-label="名称 / 标识">
+                    <td className="agent-column-name" data-label="名称 / 标识">
                       <strong>{item.name}</strong>
                       <small className="cell-secondary">
                         {item.slug ?? item.workspaceName ?? "-"}
                       </small>
                     </td>
-                    <td data-label="Provider">{formatProvider(item)}</td>
-                    <td data-label="状态">
+                    <td
+                      className="agent-column-secondary"
+                      data-label="Provider"
+                    >
+                      {formatProvider(item)}
+                    </td>
+                    <td className="agent-column-status" data-label="状态">
                       <StatusBadge status={item.status} />
                     </td>
-                    <td data-label="Workspace / Git">
+                    <td
+                      className="agent-column-secondary"
+                      data-label="Workspace / Git"
+                    >
                       <code className="inline-code">
                         {item.workspaceName ?? "-"}
                       </code>
@@ -281,8 +289,16 @@ export default function AgentsPage() {
                         {formatAgentGitStatus(item.gitStatus)}
                       </small>
                     </td>
-                    <td data-label="更新时间">{formatDate(item.updatedAt)}</td>
-                    <td className="actions" data-label="操作">
+                    <td
+                      className="agent-column-secondary"
+                      data-label="更新时间"
+                    >
+                      {formatDate(item.updatedAt)}
+                    </td>
+                    <td
+                      className="actions agent-column-action"
+                      data-label="操作"
+                    >
                       <button
                         onClick={() => selectAgent(item.id)}
                         type="button"
